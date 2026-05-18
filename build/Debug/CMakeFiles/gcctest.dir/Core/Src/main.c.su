@@ -1,0 +1,3 @@
+/home/kaiwen/projects/stm32/gcctest/Core/Src/main.c:148:6:Error_Handler	0	static
+/home/kaiwen/projects/stm32/gcctest/Core/Src/main.c:108:6:SystemClock_Config	72	static
+/home/kaiwen/projects/stm32/gcctest/Core/Src/main.c:64:5:main	8	static
