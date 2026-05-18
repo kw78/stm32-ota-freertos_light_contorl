@@ -2,28 +2,69 @@
 #
 # flash.sh - Automate flashing STM32 firmware via OpenOCD
 #
-# Automatically attaches ST-Link via usbipd (WSL) if not already connected.
+# All-in-one script: self-contained udev rules, auto usbipd attach (WSL),
+# build, and flash.
 #
 # Usage:
-#   ./flash.sh              Flash using default Debug build
-#   ./flash.sh Release      Flash using Release build
-#   ./flash.sh path/to/firmware.elf   Flash a specific ELF file
+#   ./flash.sh                              Flash Debug build (default)
+#   ./flash.sh Release                      Flash Release build
+#   ./flash.sh path/to/firmware.elf         Flash specific ELF
+#   ./flash.sh --install-udev               Install ST-Link udev rules (Linux)
 #
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Handle --help flag
+# ========================
+# Embedded udev rules content
+# ========================
+STLINK_UDEV_RULES='# ST-Link V1
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="3744", MODE="0666", GROUP="plugdev"
+# ST-Link V2
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="3748", MODE="0666", GROUP="plugdev"
+# ST-Link V2.1
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="374b", MODE="0666", GROUP="plugdev"
+# ST-Link V3
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="3752", MODE="0666", GROUP="plugdev"
+'
+
+# ========================
+# Install udev rules
+# ========================
+install_udev_rules() {
+    local rules_file="/etc/udev/rules.d/99-stlink.rules"
+    echo "Installing ST-Link udev rules to ${rules_file}..."
+    if [ "$(id -u)" -ne 0 ]; then
+        echo "sudo required. Re-running with sudo..."
+        exec sudo "$0" --install-udev
+    fi
+    echo "$STLINK_UDEV_RULES" > "$rules_file"
+    udevadm control --reload-rules
+    udevadm trigger
+    echo "ST-Link udev rules installed successfully."
+    exit 0
+}
+
+# ========================
+# Parse arguments
+# ========================
+if [ "$1" = "--install-udev" ]; then
+    install_udev_rules
+fi
+
 if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
     echo "Usage:"
-    echo "  ./flash.sh                             Flash using default Debug build"
-    echo "  ./flash.sh Release                  Flash using Release build"
-    echo "  ./flash.sh path/to/firmware.elf     Flash a specific ELF file"
+    echo "  ./flash.sh                              Flash Debug build (default)"
+    echo "  ./flash.sh Release                      Flash Release build"
+    echo "  ./flash.sh path/to/firmware.elf         Flash specific ELF"
+    echo "  ./flash.sh --install-udev               Install ST-Link udev rules (Linux)"
+    echo ""
+    echo "WSL: The script auto-attaches ST-Link via usbipd if not detected."
+    echo "  usbipd-win is required on Windows (https://github.com/dorssel/usbipd-win)"
     exit 0
 fi
 
-# Parse --quiet flag
 QUIET=false
 ARGS=()
 for arg in "$@"; do
@@ -62,9 +103,10 @@ if [ ! -f "${ELF_FILE}" ]; then
     echo "Error: ELF file not found: ${ELF_FILE}"
     echo ""
     echo "Usage:"
-    echo "  ./flash.sh                Flash using default Debug build"
-    echo "  ./flash.sh Release        Flash using Release build"
-    echo "  ./flash.sh path/to/file.elf  Flash a specific ELF file"
+    echo "  ./flash.sh                              Flash Debug build (default)"
+    echo "  ./flash.sh Release                      Flash Release build"
+    echo "  ./flash.sh path/to/firmware.elf         Flash specific ELF"
+    echo "  ./flash.sh --install-udev               Install ST-Link udev rules (Linux)"
     exit 1
 fi
 
@@ -75,22 +117,22 @@ echo " Build type : ${BUILD_TYPE}"
 echo " ELF file   : ${ELF_FILE}"
 echo "========================================"
 
-# ---- Auto-attach ST-Link via usbipd on WSL ----
-# Check if ST-Link is visible via lsusb
+# ========================
+# Auto-attach ST-Link via usbipd (WSL)
+# ========================
 if ! lsusb 2>/dev/null | grep -qi "0483:3748"; then
     echo "ST-Link not detected. Attempting to attach via usbipd (WSL)..."
-    # Detect the BUSID from Windows usbipd
     USBIPD_OUTPUT=$(powershell.exe -Command "usbipd list" 2>&1)
     STLINK_BUSID=$(echo "$USBIPD_OUTPUT" | grep -i "0483\|STM32.*STLink" | grep -oP '^\s*\S+' | head -1)
     if [ -z "$STLINK_BUSID" ]; then
         echo "Error: ST-Link not found in usbipd list either."
         echo "Please connect ST-Link to your computer and ensure it appears in 'usbipd list'."
+        echo "(Run 'usbipd list' in Windows PowerShell)"
         exit 1
     fi
     echo "Found ST-Link on bus $STLINK_BUSID. Attaching..."
     powershell.exe -Command "usbipd attach --wsl --busid $STLINK_BUSID" 2>&1
     sleep 3
-    # Verify attachment
     if ! lsusb 2>/dev/null | grep -qi "0483:3748"; then
         echo "Error: Failed to attach ST-Link. Try attaching manually:"
         echo "  powershell.exe -Command \"usbipd attach --wsl --busid $STLINK_BUSID\""
@@ -112,52 +154,3 @@ openocd \
 
 echo ""
 echo "Flash completed successfully!"
-</final_file_content>
-
-IMPORTANT: For any future changes to this file, use the final_file_content shown above as your reference. This content reflects the current state of the file, including any auto-formatting (e.g., if you used single quotes but the formatter converted them to double quotes). Always base your SEARCH/REPLACE operations on this final version to ensure accuracy.
-
-
-
-# task_progress RECOMMENDED
-
-When starting a new task, it is recommended to include a todo list using the task_progress parameter.
-
-
-1. Include a todo list using the task_progress parameter in your next tool call
-2. Create a comprehensive checklist of all steps needed
-3. Use markdown format: - [ ] for incomplete, - [x] for complete
-
-**Benefits of creating a todo/task_progress list now:**
-	- Clear roadmap for implementation
-	- Progress tracking throughout the task
-	- Nothing gets forgotten or missed
-	- Users can see, monitor, and edit the plan
-
-**Example structure:**```
-- [ ] Analyze requirements
-- [ ] Set up necessary files
-- [ ] Implement main functionality
-- [ ] Handle edge cases
-- [ ] Test the implementation
-- [ ] Verify results```
-
-Keeping the task_progress list updated helps track progress and ensures nothing is missed.
-
-<environment_details>
-# Visual Studio Code Visible Files
-flash.sh
-
-# Visual Studio Code Open Tabs
-Core/Src/main.c
-flash.sh
-99-stlink.rules
-
-# Current Time
-5/19/2026, 12:05:08 AM (Asia/Shanghai, UTC+8:00)
-
-# Context Window Usage
-41,951 / 128K tokens used (33%)
-
-# Current Mode
-ACT MODE
-</environment_details>
