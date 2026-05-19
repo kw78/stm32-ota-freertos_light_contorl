@@ -4,7 +4,7 @@
 2	152	1779117770379832595	CMakeFiles/gcctest.dir/Core/Src/syscalls.c.obj	c2149598a0884f33
 1	215	1779117770375832596	CMakeFiles/gcctest.dir/Core/Src/stm32f1xx_it.c.obj	1eccdc0660c8ff7e
 1	199	1779117770375832596	CMakeFiles/gcctest.dir/Core/Src/stm32f1xx_hal_msp.c.obj	33dfa2575c4f9504
-1	59	1779117813859820354	CMakeFiles/gcctest.dir/Core/Src/main.c.obj	fb5cb58909c72e93
+1	71	1779120613821569156	CMakeFiles/gcctest.dir/Core/Src/main.c.obj	fb5cb58909c72e93
 2	190	1779117770379832595	cmake/stm32cubemx/CMakeFiles/STM32_Drivers.dir/__/__/Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_gpio_ex.c.obj	8d266be0a76b1007
 2	204	1779117770379832595	cmake/stm32cubemx/CMakeFiles/STM32_Drivers.dir/__/__/Core/Src/system_stm32f1xx.c.obj	5f24c92dd4aa4d81
 0	195	1779117770375832596	CMakeFiles/gcctest.dir/Core/Src/gpio.c.obj	2405c946d9d1be4a
@@ -18,7 +18,9 @@
 5	233	1779117770379832595	cmake/stm32cubemx/CMakeFiles/STM32_Drivers.dir/__/__/Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_dma.c.obj	9eb3ce08307fec89
 6	237	1779117770383832594	cmake/stm32cubemx/CMakeFiles/STM32_Drivers.dir/__/__/Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_flash_ex.c.obj	bed78f38369146e4
 3	254	1779117770379832595	cmake/stm32cubemx/CMakeFiles/STM32_Drivers.dir/__/__/Drivers/STM32F1xx_HAL_Driver/Src/stm32f1xx_hal_rcc.c.obj	b8a9e817ef810358
-59	168	1779117813915820337	gcctest.elf	71c917cf535c76f9
-2	51	1779119600557868999	build.ninja	8c038afe6795571
-2	51	1779119600553868999	/home/kaiwen/projects/stm32/gcctest/build/Debug/cmake_install.cmake	8c038afe6795571
-2	51	1779119600557868999	/home/kaiwen/projects/stm32/gcctest/build/Debug/cmake/stm32cubemx/cmake_install.cmake	8c038afe6795571
+71	222	1779120613889569140	gcctest.elf	71c917cf535c76f9
+2	51	1779155353182460040	build.ninja	8c038afe6795571
+2	51	1779155353182460040	/home/kaiwen/projects/stm32/gcctest/build/Debug/cmake_install.cmake	8c038afe6795571
+2	51	1779155353182460040	/home/kaiwen/projects/stm32/gcctest/build/Debug/cmake/stm32cubemx/cmake_install.cmake	8c038afe6795571
+2	116	1779155683394353731	CMakeFiles/gcctest.dir/Core/Src/main.c.obj	fb5cb58909c72e93
+117	299	1779155683506353701	gcctest.elf	71c917cf535c76f9

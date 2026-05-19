@@ -49,7 +49,7 @@ install_udev_rules() {
 # ========================
 # Parse arguments
 # ========================
-if [ "$1" = "--install-udev" ]; then
+if [ "$1" = "--install-u.dev" ]; then
     install_udev_rules
 fi
 
@@ -57,7 +57,8 @@ if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
     echo "Usage:"
     echo "  ./flash.sh                              Flash Debug build (default)"
     echo "  ./flash.sh Release                      Flash Release build"
-    echo "  ./flash.sh path/to/firmware.elf         Flash specific ELF"
+    echo "  ./flash.s
+    h path/to/firmware.elf         Flash specific ELF"
     echo "  ./flash.sh --install-udev               Install ST-Link udev rules (Linux)"
     echo ""
     echo "WSL: The script auto-attaches ST-Link via usbipd if not detected."
