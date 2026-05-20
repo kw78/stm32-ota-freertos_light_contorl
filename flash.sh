@@ -324,9 +324,16 @@ if [ "$GDB_MODE" = true ]; then
     echo "使用 GDB: ${GDB}"
 
     echo "正在启动 OpenOCD GDB 服务器..."
-    openocd -f interface/stlink.cfg -f target/stm32f1x.cfg &
+    openocd -f interface/stlink.cfg -f target/stm32f1x.cfg > /tmp/openocd.log 2>&1 &
     OPENOCD_PID=$!
-    sleep 2
+
+        # 等待 OpenOCD 真正就绪，最多等 10 秒
+    for i in $(seq 1 20); do
+        if grep -q "Listening on port 3333 for gdb connections" /tmp/openocd.log 2>/dev/null; then
+            break
+        fi
+        sleep 0.5
+    done
 
     if ! kill -0 "$OPENOCD_PID" 2>/dev/null; then
         echo "错误: OpenOCD 启动失败。"

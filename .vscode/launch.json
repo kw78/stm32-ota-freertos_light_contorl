@@ -13,6 +13,7 @@
             "runToMain": true,
             "preLaunchTask": "build-debug",
             "configFiles": [
+                ".vscode/openocd-helpers.tcl",
                 "interface/stlink.cfg",
                 "target/stm32f1x.cfg"
             ],
