@@ -121,6 +121,7 @@ EXTJSON
 {
     "cmake.useCMakePresets": "always",
     "cmake.configureOnOpen": true,
+    "cmake.configureOnEdit": true,
     "cmake.automaticReconfigure": true,
     "cmake.buildBeforeRun": true,
     "cmake.parallelJobs": 0,
@@ -372,6 +373,8 @@ fi
 
 # 构建项目
 if [ "${BUILD_TYPE}" = "Debug" ]; then
+    echo "正在重新配置 CMake..."
+    cmake --preset Debug 2>&1 || true
     echo "正在构建项目..."
     ninja -C "${SCRIPT_DIR}/build/Debug" 2>&1 || true
 fi
