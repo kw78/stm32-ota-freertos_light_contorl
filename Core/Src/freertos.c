@@ -25,7 +25,9 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+extern uint16_t adc_buf[];
+extern volatile LightState_t state_now;
+void LightState_Update(uint16_t adc_value);  //函数声明
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -86,7 +88,7 @@ const osThreadAttr_t Task_SPIFlash_attributes = {
 osThreadId_t Task_UARTHandle;
 const osThreadAttr_t Task_UART_attributes = {
   .name = "Task_UART",
-  .stack_size = 128 * 4,
+  .stack_size = 256 * 4,
   .priority = (osPriority_t) osPriorityHigh4,
 };
 /* Definitions for queue_light */
@@ -94,10 +96,10 @@ osMessageQueueId_t queue_lightHandle;
 const osMessageQueueAttr_t queue_light_attributes = {
   .name = "queue_light"
 };
-/* Definitions for myQueue02 */
-osMessageQueueId_t myQueue02Handle;
-const osMessageQueueAttr_t myQueue02_attributes = {
-  .name = "myQueue02"
+/* Definitions for queue_mpu */
+osMessageQueueId_t queue_mpuHandle;
+const osMessageQueueAttr_t queue_mpu_attributes = {
+  .name = "queue_mpu"
 };
 /* Definitions for sem_adc_ready */
 osSemaphoreId_t sem_adc_readyHandle;
@@ -117,7 +119,7 @@ const osSemaphoreAttr_t sem_uart_rx_attributes = {
 
 void StartTaskLight(void *argument);
 void StartTaskMPU(void *argument);
-void StartOLEDTask(void *argument);
+void StartTaskOLED(void *argument);
 void StartTaskLED(void *argument);
 void StartTaskSPIFlash(void *argument);
 void StartTaskUART(void *argument);
@@ -157,8 +159,8 @@ void MX_FREERTOS_Init(void) {
   /* creation of queue_light */
   queue_lightHandle = osMessageQueueNew (5, sizeof(uint32_t), &queue_light_attributes);
 
-  /* creation of myQueue02 */
-  myQueue02Handle = osMessageQueueNew (16, 24, &myQueue02_attributes);
+  /* creation of queue_mpu */
+  queue_mpuHandle = osMessageQueueNew (16, 24, &queue_mpu_attributes);
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
@@ -172,7 +174,7 @@ void MX_FREERTOS_Init(void) {
   Task_MPUHandle = osThreadNew(StartTaskMPU, NULL, &Task_MPU_attributes);
 
   /* creation of Task_OLED */
-  Task_OLEDHandle = osThreadNew(StartOLEDTask, NULL, &Task_OLED_attributes);
+  Task_OLEDHandle = osThreadNew(StartTaskOLED, NULL, &Task_OLED_attributes);
 
   /* creation of Task_LED */
   Task_LEDHandle = osThreadNew(StartTaskLED, NULL, &Task_LED_attributes);
@@ -206,7 +208,10 @@ void StartTaskLight(void *argument)
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+    osSemaphoreAcquire(sem_adc_readyHandle,osWaitForever);
+    uint16_t cur = adc_buf[0];  //读取ADC_DMA
+    LightState_Update(cur);
+    osMessageQueuePut(queue_lightHandle,&state_now,0,0);
   }
   /* USER CODE END StartTaskLight */
 }
@@ -229,22 +234,22 @@ void StartTaskMPU(void *argument)
   /* USER CODE END StartTaskMPU */
 }
 
-/* USER CODE BEGIN Header_StartOLEDTask */
+/* USER CODE BEGIN Header_StartTaskOLED */
 /**
 * @brief Function implementing the Task_OLED thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_StartOLEDTask */
-void StartOLEDTask(void *argument)
+/* USER CODE END Header_StartTaskOLED */
+void StartTaskOLED(void *argument)
 {
-  /* USER CODE BEGIN StartOLEDTask */
+  /* USER CODE BEGIN StartTaskOLED */
   /* Infinite loop */
   for(;;)
   {
     osDelay(1);
   }
-  /* USER CODE END StartOLEDTask */
+  /* USER CODE END StartTaskOLED */
 }
 
 /* USER CODE BEGIN Header_StartTaskLED */

@@ -15,7 +15,7 @@
 #   ./flash.sh --gdb                        烧录 + 启动 GDB 调试
 #   ./flash.sh --gdb Release                烧录 Release + 启动 GDB
 #   ./flash.sh --gdb path/to/firmware.elf   烧录指定文件 + GDB
-#   ./flash.sh --init                初始化项目配置（.vscode + .gitignore）
+#   ./flash.sh --init                初始化项目配置（CMake + .vscode + .gitignore）
 #   ./flash.sh --install-udev               安装 ST-Link udev 规则
 #
 
@@ -68,16 +68,95 @@ install_udev_rules() {
 }
 
 # ========================
-# 初始化项目配置（.vscode + .gitignore）
+# 初始化项目配置（.vscode + .gitignore + CMake）
 # ========================
 init_vscode_config() {
     read_project_config
 
     echo "========================================"
-    echo " 初始化 VS Code 调试配置"
+    echo " 初始化项目配置"
     echo "========================================"
     echo " 项目名: ${PROJECT_NAME}"
     echo "========================================"
+
+    # 生成 CMakeLists.txt（如果不存在）
+    local CMAKE_FILE="${SCRIPT_DIR}/CMakeLists.txt"
+    if [ ! -f "$CMAKE_FILE" ]; then
+        echo "正在生成 ${CMAKE_FILE}..."
+        cat > "$CMAKE_FILE" << CMAKELISTS
+cmake_minimum_required(VERSION 3.22)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS ON)
+
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE "Debug")
+endif()
+
+set(CMAKE_PROJECT_NAME ${PROJECT_NAME})
+set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
+project(\${CMAKE_PROJECT_NAME})
+message("Build type: " \${CMAKE_BUILD_TYPE})
+
+enable_language(C ASM)
+add_executable(\${CMAKE_PROJECT_NAME})
+add_subdirectory(cmake/stm32cubemx)
+
+target_link_directories(\${CMAKE_PROJECT_NAME} PRIVATE)
+
+target_sources(\${CMAKE_PROJECT_NAME} PRIVATE
+    # Add user sources here
+)
+
+target_include_directories(\${CMAKE_PROJECT_NAME} PRIVATE
+    # Add user defined include paths
+)
+
+target_compile_definitions(\${CMAKE_PROJECT_NAME} PRIVATE
+    # Add user defined symbols
+)
+
+list(REMOVE_ITEM CMAKE_C_IMPLICIT_LINK_LIBRARIES ob)
+
+target_link_libraries(\${CMAKE_PROJECT_NAME}
+    stm32cubemx
+)
+CMAKELISTS
+    fi
+
+    # 生成 CMakePresets.json（如果不存在）
+    local PRESETS_FILE="${SCRIPT_DIR}/CMakePresets.json"
+    if [ ! -f "$PRESETS_FILE" ]; then
+        echo "正在生成 ${PRESETS_FILE}..."
+        cat > "$PRESETS_FILE" << 'PRESETSJSON'
+{
+    "version": 6,
+    "configurePresets": [
+        {
+            "name": "Debug",
+            "displayName": "Debug",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/Debug",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/gcc-arm-none-eabi.cmake"
+            }
+        },
+        {
+            "name": "Release",
+            "displayName": "Release",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/Release",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/gcc-arm-none-eabi.cmake"
+            }
+        }
+    ]
+}
+PRESETSJSON
+    fi
 
     mkdir -p "${SCRIPT_DIR}/.vscode"
 
@@ -246,6 +325,8 @@ GITIGNORE
     echo "========================================"
     echo ""
     echo " 已创建以下文件:"
+    [ -f "$CMAKE_FILE" ] && echo "   ${CMAKE_FILE}"
+    [ -f "$PRESETS_FILE" ] && echo "   ${PRESETS_FILE}"
     echo "   ${SETTINGS_FILE}"
     echo "   ${CCPP_FILE}"
     echo "   ${LAUNCH_FILE}"
@@ -299,7 +380,7 @@ case "$1" in
         echo "  ./flash.sh --gdb                        烧录 + 启动 GDB 调试"
         echo "  ./flash.sh --gdb Release                烧录 Release + GDB"
         echo "  ./flash.sh --gdb path/to/firmware.elf   烧录指定文件 + GDB"
-        echo "  ./flash.sh --init                初始化项目配置（.vscode + .gitignore）"
+        echo "  ./flash.sh --init                初始化项目配置（CMake + .vscode + .gitignore）"
         echo "  ./flash.sh --install-udev               安装 ST-Link udev 规则"
         echo ""
         echo "GDB 命令行调试:"
@@ -336,7 +417,7 @@ if [ ! -f "${ELF_FILE}" ]; then
     echo "  ./flash.sh                              烧录 Debug 版"
     echo "  ./flash.sh Release                      烧录 Release 版"
     echo "  ./flash.sh path/to/firmware.elf         烧录指定 ELF 文件"
-    echo "  ./flash.sh --init                初始化项目配置（.vscode + .gitignore）"
+    echo "  ./flash.sh --init                初始化项目配置（CMake + .vscode + .gitignore）"
     echo "  ./flash.sh --install-udev               安装 udev 规则"
     exit 1
 fi

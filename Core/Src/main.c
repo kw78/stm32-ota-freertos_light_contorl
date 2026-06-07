@@ -68,6 +68,7 @@ void MX_FREERTOS_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 extern TIM_HandleTypeDef htim3;
+extern osSemaphoreId_t sem_adc_readyHandle;
 
 uint8_t my_itoa(uint32_t num, char *buf)
 {
@@ -94,14 +95,6 @@ uint8_t my_itoa(uint32_t num, char *buf)
 
 #define ADC_BUF_SIZE 10
 uint16_t adc_buf[ADC_BUF_SIZE];
-
-typedef enum
-{
-    STATE_DARK = 0,
-    STATE_DIM,
-    STATE_IDEAL,
-    STATE_GLARE
-} LightState_t;
 
 #define DARK_EXIT 2800
 #define DIM_DOWN 1800
@@ -210,6 +203,14 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
         }
         HAL_UART_Receive_IT(&huart1, uart_rx_buf, 1);
     }
+}
+
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
+{
+  if (hadc == &hadc1)
+  {
+    osSemaphoreRelease(sem_adc_readyHandle);
+  }
 }
 /* USER CODE END 0 */
 
@@ -385,14 +386,6 @@ void SystemClock_Config(void)
 
 /* USER CODE BEGIN 4 */
 
-void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
-{
-  if (hadc == &hadc1)
-  {
-    uint16_t cur = adc_buf[0];
-    LightState_Update(cur);
-  }
-}
 /* USER CODE END 4 */
 
 /**

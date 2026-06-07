@@ -36,6 +36,13 @@ extern "C" {
 
 /* Exported types ------------------------------------------------------------*/
 /* USER CODE BEGIN ET */
+typedef enum
+{
+    STATE_DARK = 0,
+    STATE_DIM,
+    STATE_IDEAL,
+    STATE_GLARE
+} LightState_t;
 
 /* USER CODE END ET */
 
