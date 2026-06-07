@@ -114,6 +114,48 @@ EXTJSON
         echo "已添加 Cortex-Debug 到工作区推荐扩展。"
     fi
 
+    # 生成 settings.json
+    local SETTINGS_FILE="${SCRIPT_DIR}/.vscode/settings.json"
+    echo "正在生成 ${SETTINGS_FILE}..."
+    cat > "$SETTINGS_FILE" << 'SETTINGSJSON'
+{
+    "cmake.useCMakePresets": "always",
+    "cmake.configureOnOpen": true,
+    "cmake.automaticReconfigure": true,
+    "cmake.buildBeforeRun": true,
+    "cmake.parallelJobs": 0,
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "ms-vscode.cpptools",
+    "C_Cpp.clang_format_style": "file",
+    "C_Cpp.clang_format_fallbackStyle": "WebKit",
+    "editor.tabSize": 4,
+    "editor.insertSpaces": true,
+    "files.associations": {
+        "*.c": "c",
+        "*.h": "c"
+    },
+    "C_Cpp.errorSquiggles": "enabled"
+}
+SETTINGSJSON
+
+    # 生成 c_cpp_properties.json（IntelliSense 直接读 build 目录，不复制）
+    local CCPP_FILE="${SCRIPT_DIR}/.vscode/c_cpp_properties.json"
+    echo "正在生成 ${CCPP_FILE}..."
+    cat > "$CCPP_FILE" << 'CCPPJSON'
+{
+    "configurations": [
+        {
+            "name": "STM32",
+            "compileCommands": "${workspaceFolder}/build/Debug/compile_commands.json",
+            "compilerPath": "/usr/bin/arm-none-eabi-gcc",
+            "cStandard": "c11",
+            "intelliSenseMode": "linux-gcc-arm"
+        }
+    ],
+    "version": 4
+}
+CCPPJSON
+
     # 生成 launch.json
     local LAUNCH_FILE="${SCRIPT_DIR}/.vscode/launch.json"
     echo "正在生成 ${LAUNCH_FILE}..."
@@ -154,7 +196,7 @@ LAUNCHJSON
     local TASKS_FILE="${SCRIPT_DIR}/.vscode/tasks.json"
     echo "正在生成 ${TASKS_FILE}..."
 
-    cat > "$TASKS_FILE" << TASKSJSON
+    cat > "$TASKS_FILE" << 'TASKSJSON'
 {
     "version": "2.0.0",
     "tasks": [
@@ -167,7 +209,7 @@ LAUNCHJSON
                 "isDefault": true
             },
             "problemMatcher": [
-                "\$gcc"
+                "$gcc"
             ]
         }
     ]
@@ -176,20 +218,20 @@ TASKSJSON
 
     echo ""
     echo "========================================"
-    echo " VS Code 调试配置已生成！"
+    echo " VS Code 配置已生成！"
     echo "========================================"
     echo ""
     echo " 已创建以下文件:"
+    echo "   ${SETTINGS_FILE}"
+    echo "   ${CCPP_FILE}"
     echo "   ${LAUNCH_FILE}"
     echo "   ${TASKS_FILE}"
     echo "   ${EXT_FILE} (已更新)"
     echo ""
     echo " 接下来:"
-    echo "   1. 安装 Cortex-Debug 扩展 (marus25.cortex-debug)"
-    echo "   2. 按 Ctrl+Shift+P → Reload Window"
+    echo "   1. cmake --preset Debug  (配置项目)"
+    echo "   2. 安装 Cortex-Debug 扩展"
     echo "   3. 按 F5 开始调试!"
-    echo ""
-    echo "   注意: 调试前请确保 ST-Link 已连接。"
     echo "========================================"
 
     exit 0

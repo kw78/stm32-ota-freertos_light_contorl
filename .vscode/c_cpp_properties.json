@@ -1,26 +1,11 @@
 {
     "configurations": [
         {
-            "name": "Linux",
-            "includePath": [
-                "${workspaceFolder}/Core/Inc",
-                "${workspaceFolder}/Drivers/STM32F1xx_HAL_Driver/Inc",
-                "${workspaceFolder}/Drivers/STM32F1xx_HAL_Driver/Inc/Legacy",
-                "${workspaceFolder}/Drivers/CMSIS/Device/ST/STM32F1xx/Include",
-                "${workspaceFolder}/Drivers/CMSIS/Include"
-            ],
-            "defines": [
-                "USE_HAL_DRIVER",
-                "STM32F103xB"
-            ],
+            "name": "STM32",
+            "compileCommands": "${workspaceFolder}/build/Debug/compile_commands.json",
             "compilerPath": "/usr/bin/arm-none-eabi-gcc",
             "cStandard": "c11",
-            "intelliSenseMode": "linux-gcc-arm",
-            "compilerArgs": [
-                "-mcpu=cortex-m3",
-                "-mthumb",
-                "-mfloat-abi=soft"
-            ]
+            "intelliSenseMode": "linux-gcc-arm"
         }
     ],
     "version": 4

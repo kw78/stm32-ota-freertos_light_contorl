@@ -1,0 +1,2 @@
+/home/kaiwen/projects/stm32/gcctest/Core/Src/freertos.c:114:6:StartDefaultTask	8	static
+/home/kaiwen/projects/stm32/gcctest/Core/Src/freertos.c:72:6:MX_FREERTOS_Init	8	static

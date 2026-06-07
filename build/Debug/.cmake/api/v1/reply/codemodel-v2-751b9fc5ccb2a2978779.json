@@ -7,7 +7,7 @@
 				{
 					"directoryIndex" : 1,
 					"id" : "stm32cubemx::@768a070a0fe75716b479",
-					"jsonFile" : "target-stm32cubemx-Debug-2b01ad14a90d3ec19ba7.json",
+					"jsonFile" : "target-stm32cubemx-Debug-4c651eda030a79131ebf.json",
 					"name" : "stm32cubemx",
 					"projectIndex" : 0
 				}
@@ -29,7 +29,7 @@
 					"source" : ".",
 					"targetIndexes" : 
 					[
-						1
+						2
 					]
 				},
 				{
@@ -48,7 +48,8 @@
 					"source" : "cmake/stm32cubemx",
 					"targetIndexes" : 
 					[
-						0
+						0,
+						1
 					]
 				}
 			],
@@ -69,7 +70,8 @@
 					"targetIndexes" : 
 					[
 						0,
-						1
+						1,
+						2
 					]
 				}
 			],
@@ -77,15 +79,22 @@
 			[
 				{
 					"directoryIndex" : 1,
+					"id" : "FreeRTOS::@768a070a0fe75716b479",
+					"jsonFile" : "target-FreeRTOS-Debug-1faaded181dd183773d9.json",
+					"name" : "FreeRTOS",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 1,
 					"id" : "STM32_Drivers::@768a070a0fe75716b479",
-					"jsonFile" : "target-STM32_Drivers-Debug-4c5f1740aee6d8fb3471.json",
+					"jsonFile" : "target-STM32_Drivers-Debug-bc7d301fbe9ce3757961.json",
 					"name" : "STM32_Drivers",
 					"projectIndex" : 0
 				},
 				{
 					"directoryIndex" : 0,
 					"id" : "gcctest::@6890427a1f51a3e7e1df",
-					"jsonFile" : "target-gcctest-Debug-4cfb83f7f6daf68f318e.json",
+					"jsonFile" : "target-gcctest-Debug-6aca031d7208f32dff91.json",
 					"name" : "gcctest",
 					"projectIndex" : 0
 				}
