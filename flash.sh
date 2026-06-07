@@ -15,7 +15,7 @@
 #   ./flash.sh --gdb                        烧录 + 启动 GDB 调试
 #   ./flash.sh --gdb Release                烧录 Release + 启动 GDB
 #   ./flash.sh --gdb path/to/firmware.elf   烧录指定文件 + GDB
-#   ./flash.sh --init-vscode                生成 VS Code 调试配置
+#   ./flash.sh --init                初始化项目配置（.vscode + .gitignore）
 #   ./flash.sh --install-udev               安装 ST-Link udev 规则
 #
 
@@ -68,7 +68,7 @@ install_udev_rules() {
 }
 
 # ========================
-# 生成 VS Code 调试配置
+# 初始化项目配置（.vscode + .gitignore）
 # ========================
 init_vscode_config() {
     read_project_config
@@ -216,6 +216,29 @@ LAUNCHJSON
 }
 TASKSJSON
 
+    # 生成 .gitignore
+    local GITIGNORE_FILE="${SCRIPT_DIR}/.gitignore"
+    if [ ! -f "$GITIGNORE_FILE" ]; then
+        echo "正在生成 ${GITIGNORE_FILE}..."
+        cat > "$GITIGNORE_FILE" << 'GITIGNORE'
+# Build
+build/
+compile_commands.json
+
+# Binary
+*.elf
+*.bin
+*.hex
+*.map
+*.o
+*.d
+*.su
+
+# OS
+.DS_Store
+GITIGNORE
+    fi
+
     echo ""
     echo "========================================"
     echo " VS Code 配置已生成！"
@@ -227,6 +250,7 @@ TASKSJSON
     echo "   ${LAUNCH_FILE}"
     echo "   ${TASKS_FILE}"
     echo "   ${EXT_FILE} (已更新)"
+    [ -f "$GITIGNORE_FILE" ] && echo "   ${GITIGNORE_FILE}"
     echo ""
     echo " 接下来:"
     echo "   1. cmake --preset Debug  (配置项目)"
@@ -259,7 +283,7 @@ case "$1" in
     --install-udev)
         install_udev_rules
         ;;
-    --init-vscode|-i)
+    --init|-i)
         init_vscode_config
         ;;
     --gdb)
@@ -274,7 +298,7 @@ case "$1" in
         echo "  ./flash.sh --gdb                        烧录 + 启动 GDB 调试"
         echo "  ./flash.sh --gdb Release                烧录 Release + GDB"
         echo "  ./flash.sh --gdb path/to/firmware.elf   烧录指定文件 + GDB"
-        echo "  ./flash.sh --init-vscode                生成 VS Code 调试配置"
+        echo "  ./flash.sh --init                初始化项目配置（.vscode + .gitignore）"
         echo "  ./flash.sh --install-udev               安装 ST-Link udev 规则"
         echo ""
         echo "GDB 命令行调试:"
@@ -283,7 +307,7 @@ case "$1" in
         echo "  3. 连接到 localhost:3333"
         echo ""
         echo "VS Code 图形化调试:"
-        echo "  1. 运行 ./flash.sh --init-vscode  生成调试配置"
+        echo "  1. 运行 ./flash.sh --init  生成调试配置"
         echo "  2. 安装 Cortex-Debug 扩展"
         echo "  3. 按 F5 开始调试"
         exit 0
@@ -311,7 +335,7 @@ if [ ! -f "${ELF_FILE}" ]; then
     echo "  ./flash.sh                              烧录 Debug 版"
     echo "  ./flash.sh Release                      烧录 Release 版"
     echo "  ./flash.sh path/to/firmware.elf         烧录指定 ELF 文件"
-    echo "  ./flash.sh --init-vscode                生成 VS Code 调试配置"
+    echo "  ./flash.sh --init                初始化项目配置（.vscode + .gitignore）"
     echo "  ./flash.sh --install-udev               安装 udev 规则"
     exit 1
 fi
