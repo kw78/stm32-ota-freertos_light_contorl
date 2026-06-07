@@ -1210,7 +1210,7 @@
 					"value" : "No help, variable specified on the command line."
 				}
 			],
-			"type" : "UNINITIALIZED",
+			"type" : "FILEPATH",
 			"value" : "/home/kaiwen/projects/stm32/gcctest/cmake/gcc-arm-none-eabi.cmake"
 		},
 		{
