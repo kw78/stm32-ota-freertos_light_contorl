@@ -1,6 +1,6 @@
-/home/kaiwen/projects/stm32/gcctest/Core/Src/main.c:167:13:ftoa_2dp	24	static
 /home/kaiwen/projects/stm32/gcctest/Core/Src/main.c:73:9:my_itoa	24	static
 /home/kaiwen/projects/stm32/gcctest/Core/Src/main.c:109:6:LightState_Update	0	static
+/home/kaiwen/projects/stm32/gcctest/Core/Src/main.c:167:6:ftoa_2dp	24	static
 /home/kaiwen/projects/stm32/gcctest/Core/Src/main.c:184:6:HAL_UARTEx_RxEventCallback	16	static
 /home/kaiwen/projects/stm32/gcctest/Core/Src/main.c:197:6:HAL_UART_RxCpltCallback	8	static
 /home/kaiwen/projects/stm32/gcctest/Core/Src/main.c:208:6:HAL_ADC_ConvCpltCallback	8	static

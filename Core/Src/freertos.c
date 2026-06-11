@@ -25,8 +25,12 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "oled.h"
+#include "MPU6050.h"
+#include <string.h>
 extern uint16_t adc_buf[];
 extern volatile LightState_t state_now;
+extern void ftoa_2dp(char *buf, float val);
 void LightState_Update(uint16_t adc_value);  //函数声明
 /* USER CODE END Includes */
 
@@ -160,7 +164,7 @@ void MX_FREERTOS_Init(void) {
   queue_lightHandle = osMessageQueueNew (5, sizeof(uint32_t), &queue_light_attributes);
 
   /* creation of queue_mpu */
-  queue_mpuHandle = osMessageQueueNew (16, 24, &queue_mpu_attributes);
+  queue_mpuHandle = osMessageQueueNew (16, 20, &queue_mpu_attributes);
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
@@ -226,10 +230,14 @@ void StartTaskLight(void *argument)
 void StartTaskMPU(void *argument)
 {
   /* USER CODE BEGIN StartTaskMPU */
+  MpuData_t data;
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+    MPU6050_Read_Accel(&data.ax, &data.ay, &data.az);
+    MPU6050_Cacul_Tangle(&data.Pitch, &data.Roll, &data.ax, &data.ay, &data.az);
+    osMessageQueuePut(queue_mpuHandle,&data,0,0);
+    osDelay(200);
   }
   /* USER CODE END StartTaskMPU */
 }
@@ -244,11 +252,49 @@ void StartTaskMPU(void *argument)
 void StartTaskOLED(void *argument)
 {
   /* USER CODE BEGIN StartTaskOLED */
+  MpuData_t received;
+  char state_str[6];
+  char line[22];
+  char num[8];
+  int time;
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+    osMessageQueueGet(queue_mpuHandle, &received, 0, osWaitForever);  // 从队列拷贝出来
+    switch (state_now)
+      {
+      case STATE_DARK:  strcpy(state_str,"Dark "); break;
+      case STATE_DIM:   strcpy(state_str,"Dim  "); break;
+      case STATE_IDEAL: strcpy(state_str,"Ideal"); break;
+      case STATE_GLARE: strcpy(state_str,"Glare"); break;
+      default:          strcpy(state_str,"ERROR"); break;
+      }
+    
+    OLED_ShowString(0, 0, state_str);
+
+    strcpy(line, "ax:");
+    ftoa_2dp(num, received.ax);
+    strcat(line, num);
+    strcat(line, " P:");
+    ftoa_2dp(num, received.Pitch);
+    strcat(line, num);
+    OLED_ShowString(0, 1, line);
+
+    strcpy(line, "ay:");
+    ftoa_2dp(num, received.ay);
+    strcat(line, num);
+    strcat(line, " R:");
+    ftoa_2dp(num, received.Roll);
+    strcat(line, num);
+    OLED_ShowString(0, 2, line);
+
+    strcpy(line, "az:");
+    ftoa_2dp(num, received.az);
+    strcat(line, num);
+    OLED_ShowString(0, 3, line);
+    osDelay(200);
   }
+
   /* USER CODE END StartTaskOLED */
 }
 

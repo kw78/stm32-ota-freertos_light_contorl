@@ -1,7 +1,7 @@
-/home/kaiwen/projects/stm32/gcctest/Core/Src/freertos.c:205:6:StartTaskLight	8	static
-/home/kaiwen/projects/stm32/gcctest/Core/Src/freertos.c:226:6:StartTaskMPU	8	static
-/home/kaiwen/projects/stm32/gcctest/Core/Src/freertos.c:244:6:StartTaskOLED	8	static
-/home/kaiwen/projects/stm32/gcctest/Core/Src/freertos.c:262:6:StartTaskLED	8	static
-/home/kaiwen/projects/stm32/gcctest/Core/Src/freertos.c:280:6:StartTaskSPIFlash	8	static
-/home/kaiwen/projects/stm32/gcctest/Core/Src/freertos.c:298:6:StartTaskUART	8	static
-/home/kaiwen/projects/stm32/gcctest/Core/Src/freertos.c:134:6:MX_FREERTOS_Init	8	static
+/home/kaiwen/projects/stm32/gcctest/Core/Src/freertos.c:209:6:StartTaskLight	8	static
+/home/kaiwen/projects/stm32/gcctest/Core/Src/freertos.c:230:6:StartTaskMPU	40	static
+/home/kaiwen/projects/stm32/gcctest/Core/Src/freertos.c:308:6:StartTaskLED	8	static
+/home/kaiwen/projects/stm32/gcctest/Core/Src/freertos.c:326:6:StartTaskSPIFlash	8	static
+/home/kaiwen/projects/stm32/gcctest/Core/Src/freertos.c:344:6:StartTaskUART	8	static
+/home/kaiwen/projects/stm32/gcctest/Core/Src/freertos.c:252:6:StartTaskOLED	72	static
+/home/kaiwen/projects/stm32/gcctest/Core/Src/freertos.c:138:6:MX_FREERTOS_Init	8	static

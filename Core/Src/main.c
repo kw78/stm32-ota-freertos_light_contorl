@@ -164,7 +164,7 @@ volatile uint32_t today_ideal_sec = 0;
 volatile uint32_t today_glare_sec = 0;
 volatile uint32_t seconds_today = 0;
 
-static void ftoa_2dp(char *buf, float val) {
+void ftoa_2dp(char *buf, float val) {
     int negative = 0;
     if (val < 0.0f) { negative = 1; val = -val; }
     int int_part = (int)val;

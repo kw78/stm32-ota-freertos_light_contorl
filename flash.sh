@@ -41,12 +41,52 @@ SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="3752", MODE="0666"
 # ========================
 read_project_config() {
     PROJECT_NAME=""
+    CHIP_DEFINE=""
+    CHIP_DEVICE=""
+    OPENOCD_TARGET=""
+    OPENOCD_INTERFACE="stlink"
     # 从 CMakeLists.txt 读取项目名
     if [ -f "${SCRIPT_DIR}/CMakeLists.txt" ]; then
         PROJECT_NAME=$(grep -oP 'set\(CMAKE_PROJECT_NAME\s+\K\w+' "${SCRIPT_DIR}/CMakeLists.txt" || true)
     fi
     if [ -z "$PROJECT_NAME" ]; then
         PROJECT_NAME=$(basename "$SCRIPT_DIR")
+    fi
+    # 从 CubeMX CMakeLists.txt 读取芯片 define（如 STM32F103xB）
+    local MX_CMAKE="${SCRIPT_DIR}/cmake/stm32cubemx/CMakeLists.txt"
+    if [ -f "$MX_CMAKE" ]; then
+        CHIP_DEFINE=$(grep -oP 'STM32F[0-9]+[a-zA-Z]+' "$MX_CMAKE" | head -1 || true)
+    fi
+    if [ -z "$CHIP_DEFINE" ]; then
+        CHIP_DEFINE="STM32F103xB"
+    fi
+    # 从 .ioc 读取完整芯片型号（用于 OpenOCD device）
+    local IOC_FILE
+    IOC_FILE=$(find "${SCRIPT_DIR}" -maxdepth 1 -name "*.ioc" -print -quit 2>/dev/null)
+    if [ -f "$IOC_FILE" ]; then
+        CHIP_DEVICE=$(grep -oP 'Mcu\.CPN=\K\S+' "$IOC_FILE" || true)
+        # 推断 OpenOCD target（STM32 系列）
+        local FAMILY
+        FAMILY=$(grep -oP 'Mcu\.Family=\K\S+' "$IOC_FILE" || true)
+        if [[ "$FAMILY" == "STM32F1" ]]; then
+            OPENOCD_TARGET="stm32f1x"
+        elif [[ "$FAMILY" == "STM32F4" ]]; then
+            OPENOCD_TARGET="stm32f4x"
+        elif [[ "$FAMILY" == "STM32L4" ]]; then
+            OPENOCD_TARGET="stm32l4x"
+        elif [[ "$FAMILY" == "STM32G4" ]]; then
+            OPENOCD_TARGET="stm32g4x"
+        elif [[ "$FAMILY" == "STM32H7" ]]; then
+            OPENOCD_TARGET="stm32h7x"
+        else
+            OPENOCD_TARGET="stm32f1x"
+        fi
+    fi
+    if [ -z "$CHIP_DEVICE" ]; then
+        CHIP_DEVICE="STM32F103C8"
+    fi
+    if [ -z "$OPENOCD_TARGET" ]; then
+        OPENOCD_TARGET="stm32f1x"
     fi
 }
 
@@ -221,12 +261,26 @@ SETTINGSJSON
     # 生成 c_cpp_properties.json（IntelliSense 直接读 build 目录，不复制）
     local CCPP_FILE="${SCRIPT_DIR}/.vscode/c_cpp_properties.json"
     echo "正在生成 ${CCPP_FILE}..."
-    cat > "$CCPP_FILE" << 'CCPPJSON'
+    cat > "$CCPP_FILE" << CCPPJSON
 {
     "configurations": [
         {
             "name": "STM32",
-            "compileCommands": "${workspaceFolder}/build/Debug/compile_commands.json",
+            "compileCommands": "\${workspaceFolder}/build/Debug/compile_commands.json",
+            "includePath": [
+                "\${workspaceFolder}/Core/Inc",
+                "\${workspaceFolder}/Drivers/STM32F1xx_HAL_Driver/Inc",
+                "\${workspaceFolder}/Drivers/STM32F1xx_HAL_Driver/Inc/Legacy",
+                "\${workspaceFolder}/Drivers/CMSIS/Device/ST/STM32F1xx/Include",
+                "\${workspaceFolder}/Drivers/CMSIS/Include",
+                "\${workspaceFolder}/Middlewares/Third_Party/FreeRTOS/Source/include",
+                "\${workspaceFolder}/Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2",
+                "\${workspaceFolder}/Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM3"
+            ],
+            "defines": [
+                "USE_HAL_DRIVER",
+                "${CHIP_DEFINE}"
+            ],
             "compilerPath": "/usr/bin/arm-none-eabi-gcc",
             "cStandard": "c11",
             "intelliSenseMode": "linux-gcc-arm"
@@ -256,13 +310,13 @@ CCPPJSON
             "cwd": "\${workspaceFolder}",
             "executable": "\${workspaceFolder}/build/Debug/${PROJECT_NAME}.elf",
             "servertype": "openocd",
-            "device": "STM32F103xB",
+            "device": "${CHIP_DEVICE}",
             "interface": "swd",
             "runToMain": true,
             "preLaunchTask": "build-debug",
             "configFiles": [
-                "interface/stlink.cfg",
-                "target/stm32f1x.cfg"
+                "interface/${OPENOCD_INTERFACE}.cfg",
+                "target/${OPENOCD_TARGET}.cfg"
             ],
             "svdFile": "",
             "gdbPath": "${GDB_PATH}",
@@ -432,7 +486,11 @@ echo "========================================"
 # ========================
 # WSL 下自动挂载 ST-Link
 # ========================
-if ! lsusb 2>/dev/null | grep -qi "0483:3748"; then
+detect_stlink() {
+    lsusb 2>/dev/null | grep -qi "0483:374[48b]" || lsusb 2>/dev/null | grep -qi "0483:3752"
+}
+
+if ! detect_stlink; then
     echo "未检测到 ST-Link，尝试通过 usbipd (WSL) 挂载..."
     USBIPD_OUTPUT=$(powershell.exe -Command "usbipd list" 2>&1)
     STLINK_BUSID=$(echo "$USBIPD_OUTPUT" | grep -i "0483\|STM32.*STLink" | grep -oP '^\s*\S+' | head -1)
@@ -444,7 +502,7 @@ if ! lsusb 2>/dev/null | grep -qi "0483:3748"; then
     echo "在总线 $STLINK_BUSID 上找到 ST-Link，正在挂载..."
     powershell.exe -Command "usbipd attach --wsl --busid $STLINK_BUSID" 2>&1
     sleep 3
-    if ! lsusb 2>/dev/null | grep -qi "0483:3748"; then
+    if ! detect_stlink; then
         echo "错误: 挂载 ST-Link 失败。请手动挂载:"
         echo "  powershell.exe -Command \"usbipd attach --wsl --busid $STLINK_BUSID\""
         exit 1
@@ -474,7 +532,7 @@ if [ "$GDB_MODE" = true ]; then
     echo "使用 GDB: ${GDB}"
 
     echo "正在启动 OpenOCD GDB 服务器..."
-    openocd -f interface/stlink.cfg -f target/stm32f1x.cfg > /tmp/openocd.log 2>&1 &
+    openocd -f "interface/${OPENOCD_INTERFACE}.cfg" -f "target/${OPENOCD_TARGET}.cfg" > /tmp/openocd.log 2>&1 &
     OPENOCD_PID=$!
 
         # 等待 OpenOCD 真正就绪，最多等 10 秒
@@ -517,7 +575,7 @@ if [ "$GDB_MODE" = true ]; then
 else
     # 普通烧录模式
     echo "正在通过 OpenOCD 烧录..."
-    openocd -f interface/stlink.cfg -f target/stm32f1x.cfg -c "program ${ELF_FILE} verify reset exit"
+    openocd -f "interface/${OPENOCD_INTERFACE}.cfg" -f "target/${OPENOCD_TARGET}.cfg" -c "program ${ELF_FILE} verify reset exit"
 
     echo ""
     echo "烧录成功!"

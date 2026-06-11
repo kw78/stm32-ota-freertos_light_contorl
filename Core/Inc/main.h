@@ -44,6 +44,25 @@ typedef enum
     STATE_GLARE
 } LightState_t;
 
+typedef struct {
+    float ax, ay, az;
+    float Pitch, Roll;
+} MpuData_t;
+
+typedef enum{
+    CMD_SAVE_LIGHT_STATS,
+    CMD_SAVE_CONFIG,
+    CMD_SAVE_LOG,
+} FlashCmdType_t;
+
+typedef struct {
+    FlashCmdType_t cmd;
+    uint32_t addr;
+    uint8_t data[64];   //寄存器8位
+    uint16_t len;
+} FlashCmd_t;
+
+
 /* USER CODE END ET */
 
 /* Exported constants --------------------------------------------------------*/
