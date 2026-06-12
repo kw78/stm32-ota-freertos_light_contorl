@@ -81,7 +81,6 @@ def wait_ack(ser: serial.Serial, timeout: float) -> bool:
             time.sleep(0.01)
     print("  等待 ACK 超时")
     return False
-    return False
 
 
 def main():

@@ -34,7 +34,7 @@
 extern uint16_t adc_buf[];
 extern volatile LightState_t state_now;
 extern void ftoa_2dp(char *buf, float val);
-extern uint8_t uart_rx_buf[50];
+extern uint8_t uart_rx_buf[];
 extern void OTA_Process(void);
 void LightState_Update(uint16_t adc_value);  //函数声明
 /* USER CODE END Includes */
@@ -174,10 +174,10 @@ void MX_FREERTOS_Init(void) {
   queue_lightHandle = osMessageQueueNew (5, sizeof(uint32_t), &queue_light_attributes);
 
   /* creation of queue_mpu */
-  queue_mpuHandle = osMessageQueueNew (8, 20, &queue_mpu_attributes);
+  queue_mpuHandle = osMessageQueueNew (8, sizeof(MpuData_t), &queue_mpu_attributes);
 
   /* creation of queue_flash */
-  queue_flashHandle = osMessageQueueNew (8, 74, &queue_flash_attributes);
+  queue_flashHandle = osMessageQueueNew (8, sizeof(FlashCmd_t), &queue_flash_attributes);
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */

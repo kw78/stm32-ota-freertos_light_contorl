@@ -5,6 +5,7 @@ enable_language(C ASM)
 set(MX_Defines_Syms 
 	USE_HAL_DRIVER 
 	STM32F103xB
+	USE_FREERTOS
     $<$<CONFIG:Debug>:DEBUG>
 )
 

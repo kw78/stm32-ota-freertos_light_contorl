@@ -55,10 +55,7 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-static const char *uart_msg = "Hello from STM32!\r\n";
 uint8_t uart_rx_buf[128];
-static uint8_t rx_flag = 0;
-static uint8_t change_message_flag = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -76,29 +73,6 @@ extern osSemaphoreId_t sem_uart_rxHandle;
 extern void OTA_RingBuf_Put(uint8_t byte);
 // 声明要调用的freertos里的句柄
 
-uint8_t my_itoa(uint32_t num, char *buf)
-{
-    uint8_t len = 0;
-    if (num == 0)
-        buf[len++] = '0';
-    else
-    {
-        char temp[16];
-        uint8_t i = 0;
-        while (num > 0)
-        {
-            temp[i++] = num % 10 + '0';
-            num /= 10;
-        }
-        while (i > 0)
-            buf[len++] = temp[--i];
-    }
-    buf[len++] = '\r';
-    buf[len++] = '\n';
-    buf[len++] = '\0';
-    return len;
-}
-
 #define ADC_BUF_SIZE 10
 uint16_t adc_buf[ADC_BUF_SIZE];
 
@@ -108,7 +82,7 @@ uint16_t adc_buf[ADC_BUF_SIZE];
 #define IDEAL_DOWN 1000
 #define IDEAL_UP 1500
 #define GLARE_EXIT 800
-#define N 5
+#define DEBOUNCE_COUNT 5
 
 volatile LightState_t state_now = STATE_DARK;
 
@@ -154,7 +128,7 @@ void LightState_Update(uint16_t adc_value)
         change = 0;
     else
     {
-        if (change < N)
+        if (change < DEBOUNCE_COUNT)
             change++;
         else
         {
