@@ -4,6 +4,7 @@
 #include "cmsis_os.h"
 #endif
 #include <string.h>
+#include <stdio.h>
 
 #define RING_BUF_SIZE 512
 
@@ -127,10 +128,10 @@ static int Pkt_ParseByte(uint8_t byte)
             uint16_t calc_crc = crc16_compute(tmp, 2 + pkt_len);
             
             if (calc_crc == received_crc) {
+                pkt_state = PKT_WAIT_HEADER; 
                 return 1;   // CRC 正确，完整包
             }
            // CRC 错误，丢弃
-            pkt_state = PKT_WAIT_HEADER;
         }
         break;
     }
@@ -163,7 +164,25 @@ static void OTA_HandlePacket(uint8_t cmd, const uint8_t *data, uint8_t len)
     case CMD_OTA_DATA:
         if(ota_bytes_written + len > OTA_FW_MAX_SIZE) break;
 
-        W25_WritePage(OTA_FW_ADDR + ota_bytes_written,data,len);
+        W25_WritePage(OTA_FW_ADDR + ota_bytes_written, data, len);
+
+        // 回读验证
+        uint8_t verify_buf[64];
+        W25_Read(OTA_FW_ADDR + ota_bytes_written, verify_buf, len);
+        if (memcmp(data, verify_buf, len) != 0) {
+            // 打印前 8 字节对比
+            char dbg[40];
+            int n = snprintf(dbg, sizeof(dbg),
+                "W ERR@%lu: w=%02X%02X%02X r=%02X%02X%02X\r\n",
+                (unsigned long)ota_bytes_written,
+                data[0], data[1], data[2],
+                verify_buf[0], verify_buf[1], verify_buf[2]);
+            HAL_UART_Transmit(&huart1, (uint8_t *)dbg, (uint16_t)n, 100);
+            uint8_t nack = 0x15;
+            HAL_UART_Transmit(&huart1, &nack, 1, 100);
+            break;
+        }
+
         ota_bytes_written += len;
 
         // 回复ACK

@@ -13,11 +13,13 @@ static void CS_High(void){
 static void W25_WaitBusy(void){
     uint8_t cmd = W25_CMD_READ_STATUS1;
     uint8_t status;
+    uint32_t start = HAL_GetTick();
     do{
         CS_Low();
         HAL_SPI_Transmit(&hspi2, &cmd,1,100);
         HAL_SPI_Receive(&hspi2,&status,1,100);
         CS_High();
+        if (HAL_GetTick() - start > 500) break;  // 500ms 超时防止死循环
     }while(status & 0x01);
 }
 

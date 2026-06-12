@@ -7,6 +7,8 @@ SPI_HandleTypeDef hspi2;
 
 #define APP_START_ADDR 0x08002000
 
+void SysTick_Handler(void) { HAL_IncTick(); }
+
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
@@ -78,6 +80,19 @@ void SystemClock_Config(void)
 
 void MX_SPI2_Init(void)
 {
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+  __HAL_RCC_SPI2_CLK_ENABLE();
+
+  GPIO_InitStruct.Pin = GPIO_PIN_13|GPIO_PIN_15;
+  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  GPIO_InitStruct.Pin = GPIO_PIN_14;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   hspi2.Instance = SPI2;
   hspi2.Init.Mode = SPI_MODE_MASTER;
@@ -100,17 +115,6 @@ void MX_SPI2_Init(void)
 }
 
 
-static void flash_erase_app(void){
-    HAL_FLASH_Unlock();
-    FLASH_EraseInitTypeDef erase;
-    uint32_t error;
-    erase.TypeErase = FLASH_TYPEERASE_PAGES;
-    erase.PageAddress = APP_START_ADDR;
-    erase.NbPages = 54;   // 54KB / 1KB = 54 页
-    HAL_FLASHEx_Erase(&erase, &error);
-    HAL_FLASH_Lock();
-}
-
 static void my_MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
@@ -128,39 +132,49 @@ static void my_MX_GPIO_Init(void)
 
 }
 
-static void jump_to_app(void){
-    uint32_t app_sp = *(volatile uint32_t *)APP_START_ADDR;       // 读栈顶
-    uint32_t app_pc = *(volatile uint32_t *)(APP_START_ADDR + 4); // 读入口地址
-
-    __disable_irq();              // 关中断
-    SysTick->CTRL = 0;            // 关 SysTick
-    SysTick->LOAD = 0;
-    SysTick->VAL  = 0;
-    __set_MSP(app_sp);            // 设置栈指针
-    SCB->VTOR = APP_START_ADDR;   // 重定向向量表
-    __enable_irq();               // 开中断
-    ((void(*)(void))app_pc)();    // 跳转
+static void __attribute__((naked)) jump_to_app(void){
+    __asm volatile(
+        "cpsid i                    \n"
+        "ldr r0, [%0]              \n"
+        "ldr r1, [%0, #4]          \n"
+        "msr MSP, r0               \n"
+        "movw r2, #0xED08           \n"
+        "movt r2, #0xE000           \n"
+        "str %0, [r2]              \n"
+        "cpsie i                    \n"
+        "bx r1                     \n"
+        :
+        : "r" (APP_START_ADDR)
+        : "r0", "r1", "r2"
+    );
 }
 
-// 半字写入flash
-static void copy_firmware(uint32_t src_addr, uint32_t dst_addr, uint32_t size){
+// 搬运固件，带回读校验，返回 0=成功, -1=写入失败, -2=回读校验失败
+static int copy_firmware(uint32_t src_addr, uint32_t dst_addr, uint32_t size){
     uint8_t buf[256];
+    uint8_t readback[256];
     HAL_FLASH_Unlock();
     for(uint32_t pos = 0; pos < size; pos += 256){
-        // 一页一页写入
         uint32_t chunk = (size - pos > 256) ? 256 : (size - pos);
+        // 从 SPI Flash 读取
         W25_Read(src_addr + pos, buf, chunk);
+        // 写入内部 Flash（半字）
         for(uint32_t i = 0; i < chunk; i += 2){
             uint16_t halfword = buf[i] | (buf[i+1] << 8);
-            HAL_FLASH_Program(FLASH_TYPEPROGRAM_HALFWORD, dst_addr + pos + i, halfword);            
+            if(HAL_FLASH_Program(FLASH_TYPEPROGRAM_HALFWORD, dst_addr + pos + i, halfword) != HAL_OK){
+                HAL_FLASH_Lock();
+                return -1;
+            }
+        }
+        // 回读内部 Flash 并对比
+        memcpy(readback, (void *)(dst_addr + pos), chunk);
+        if(memcmp(buf, readback, chunk) != 0){
+            HAL_FLASH_Lock();
+            return -2;
         }
     }
     HAL_FLASH_Lock();
-}
-
-static uint32_t crc32_verify(uint32_t flash_addr, uint32_t size)
-{
-    return crc32_compute((const uint8_t *)flash_addr, size);
+    return 0;
 }
 
 int main(void)
@@ -170,6 +184,14 @@ int main(void)
     my_MX_GPIO_Init();
     MX_SPI2_Init();
 
+    // 验证 SPI Flash 是否可用
+    uint32_t spi_id = W25_ReadID();
+    if (spi_id == 0x000000 || spi_id == 0xFFFFFF) {
+        // SPI Flash 不响应，直接跳转 App
+        jump_to_app();
+        while(1) {}
+    }
+
     // 读 OTA 标志
     OTA_Flag_t flag;
     W25_Read(OTA_FLAG_ADDR, (uint8_t *)&flag, sizeof(flag));
@@ -178,14 +200,38 @@ int main(void)
     if (flag.magic == OTA_MAGIC && flag.state == OTA_STATE_PENDING
         && flag.fw_size <= OTA_FW_MAX_SIZE)
     {
-        // 校验固件 CRC
-        // 搬运到内部 Flash
-        copy_firmware(OTA_FW_ADDR, APP_START_ADDR, flag.fw_size);
+        // 先校验 SPI Flash 中固件的 CRC32（不拷贝）
+        uint8_t crc_buf[256];
+        uint32_t crc_pos = 0;
+        uint32_t calc_crc = 0xFFFFFFFF;
+        while (crc_pos < flag.fw_size) {
+            uint32_t chunk = (flag.fw_size - crc_pos > 256) ? 256 : (flag.fw_size - crc_pos);
+            W25_Read(OTA_FW_ADDR + crc_pos, crc_buf, chunk);
+            calc_crc = crc32_update(calc_crc, crc_buf, chunk);
+            crc_pos += chunk;
+        }
+        calc_crc = ~calc_crc;
 
-        // 回读内部 Flash 验证 CRC
-        if (crc32_verify(APP_START_ADDR, flag.fw_size) == flag.fw_crc32)
+        // 合法性检查：栈顶地址必须在 RAM 范围内（0x20000000 ~ 0x20005000）
+        uint32_t app_sp;
+        W25_Read(OTA_FW_ADDR, (uint8_t *)&app_sp, 4);
+        int sp_valid = (app_sp >= 0x20000000 && app_sp <= 0x20005000);
+
+        if (calc_crc == flag.fw_crc32 && sp_valid)
         {
-            // 清除 OTA 标志
+            // CRC 匹配且固件合法 → 搬运 + 回读校验
+            int copy_ret = copy_firmware(OTA_FW_ADDR, APP_START_ADDR, flag.fw_size);
+            if (copy_ret == 0) {
+                // 搬运成功且校验通过 → 清除 OTA 标志
+                flag.state = OTA_STATE_IDLE;
+                W25_EraseSector(OTA_FLAG_ADDR);
+                W25_WritePage(OTA_FLAG_ADDR, (uint8_t *)&flag, sizeof(flag));
+            }
+            // copy_ret != 0 时保留 PENDING 标志，下次复位重试
+        }
+        else
+        {
+            // CRC 不匹配或固件非法 → 清除标志，不搬运
             flag.state = OTA_STATE_IDLE;
             W25_EraseSector(OTA_FLAG_ADDR);
             W25_WritePage(OTA_FLAG_ADDR, (uint8_t *)&flag, sizeof(flag));

@@ -57,18 +57,30 @@ def send_packet(ser: serial.Serial, cmd: int, data: bytes = b'', timeout: float 
 
 
 def wait_ack(ser: serial.Serial, timeout: float) -> bool:
-    """等待 ACK (0x06) 或 NACK (0x15)"""
+    """等待 ACK (0x06) 或 NACK (0x15)，同时打印设备调试输出"""
     deadline = time.time() + timeout
+    dbg_buf = b''
     while time.time() < deadline:
         if ser.in_waiting > 0:
             resp = ser.read(1)[0]
             if resp == 0x06:
+                if dbg_buf:
+                    print(f"  [设备] {dbg_buf.decode(errors='replace').strip()}")
                 return True
             elif resp == 0x15:
+                if dbg_buf:
+                    print(f"  [设备] {dbg_buf.decode(errors='replace').strip()}")
                 print("  收到 NACK")
                 return False
-        time.sleep(0.01)
+            else:
+                dbg_buf += bytes([resp])
+        else:
+            if dbg_buf:
+                print(f"  [设备] {dbg_buf.decode(errors='replace').strip()}")
+                dbg_buf = b''
+            time.sleep(0.01)
     print("  等待 ACK 超时")
+    return False
     return False
 
 
@@ -106,7 +118,7 @@ def main():
     # ---- 发送 START 包 ----
     print("\n[1/3] 发送 OTA START...")
     start_data = struct.pack('<II', fw_size, fw_crc)
-    if not send_packet(ser, CMD_OTA_START, start_data, timeout=10):
+    if not send_packet(ser, CMD_OTA_START, start_data, timeout=30):
         print("START 失败，中止")
         ser.close()
         sys.exit(1)

@@ -1,7 +1,0 @@
-/home/kaiwen/projects/stm32/gcctest/build/Debug/CMakeFiles/gcctest.dir
-/home/kaiwen/projects/stm32/gcctest/build/Debug/CMakeFiles/edit_cache.dir
-/home/kaiwen/projects/stm32/gcctest/build/Debug/CMakeFiles/rebuild_cache.dir
-/home/kaiwen/projects/stm32/gcctest/build/Debug/cmake/stm32cubemx/CMakeFiles/STM32_Drivers.dir
-/home/kaiwen/projects/stm32/gcctest/build/Debug/cmake/stm32cubemx/CMakeFiles/FreeRTOS.dir
-/home/kaiwen/projects/stm32/gcctest/build/Debug/cmake/stm32cubemx/CMakeFiles/edit_cache.dir
-/home/kaiwen/projects/stm32/gcctest/build/Debug/cmake/stm32cubemx/CMakeFiles/rebuild_cache.dir

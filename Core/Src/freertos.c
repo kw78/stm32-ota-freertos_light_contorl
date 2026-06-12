@@ -229,6 +229,7 @@ void StartTaskLight(void *argument)
     uint16_t cur = adc_buf[0];  //读取ADC_DMA
     LightState_Update(cur);
     osMessageQueuePut(queue_lightHandle,&state_now,0,0);
+    osDelay(10);
   }
   /* USER CODE END StartTaskLight */
 }

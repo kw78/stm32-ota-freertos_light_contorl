@@ -31,7 +31,10 @@
 /* USER CODE BEGIN Includes */
 #include "oled.h"
 #include "MPU6050.h"
+#include "w25d64.h"
+#include "ota.h"
 #include <string.h>
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -53,7 +56,7 @@
 
 /* USER CODE BEGIN PV */
 static const char *uart_msg = "Hello from STM32!\r\n";
-uint8_t uart_rx_buf[50];
+uint8_t uart_rx_buf[128];
 static uint8_t rx_flag = 0;
 static uint8_t change_message_flag = 0;
 /* USER CODE END PV */
@@ -185,13 +188,11 @@ void ftoa_2dp(char *buf, float val) {
 }
 
 
-void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     if (huart->Instance == USART1) {
-        for (int i = 0; i < Size; i++) {
-            OTA_RingBuf_Put(uart_rx_buf[i]);
-        }
+        OTA_RingBuf_Put(uart_rx_buf[0]);
         osSemaphoreRelease(sem_uart_rxHandle);
-        HAL_UARTEx_ReceiveToIdle_IT(&huart1, uart_rx_buf, sizeof(uart_rx_buf));
+        HAL_UART_Receive_IT(&huart1, uart_rx_buf, 1);
     }
 }
 
@@ -235,9 +236,57 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+
+  // SPI2 初始化：在 DMA 之前，避免 DMA 干扰轮询模式 SPI
+  __HAL_RCC_SPI2_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+  GPIO_InitTypeDef spi_gpio = {0};
+  spi_gpio.Pin = GPIO_PIN_13 | GPIO_PIN_15;
+  spi_gpio.Mode = GPIO_MODE_AF_PP;
+  spi_gpio.Speed = GPIO_SPEED_FREQ_HIGH;
+  HAL_GPIO_Init(GPIOB, &spi_gpio);
+  spi_gpio.Pin = GPIO_PIN_14;
+  spi_gpio.Mode = GPIO_MODE_INPUT;
+  spi_gpio.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOB, &spi_gpio);
+  hspi2.Instance = SPI2;
+  hspi2.Init.Mode = SPI_MODE_MASTER;
+  hspi2.Init.Direction = SPI_DIRECTION_2LINES;
+  hspi2.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi2.Init.CLKPolarity = SPI_POLARITY_LOW;
+  hspi2.Init.CLKPhase = SPI_PHASE_1EDGE;
+  hspi2.Init.NSS = SPI_NSS_SOFT;
+  hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_4;
+  hspi2.Init.FirstBit = SPI_FIRSTBIT_MSB;
+  hspi2.Init.TIMode = SPI_TIMODE_DISABLE;
+  hspi2.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+  hspi2.Init.CRCPolynomial = 10;
+  if (HAL_SPI_Init(&hspi2) != HAL_OK) { Error_Handler(); }
+
+  // SPI Flash 软件复位 + 验证读取（在 DMA 初始化之前完成）
+  HAL_GPIO_WritePin(FLASH_CS_GPIO_Port, FLASH_CS_Pin, GPIO_PIN_SET);
+  uint8_t flash_rst = 0x66;
+  HAL_GPIO_WritePin(FLASH_CS_GPIO_Port, FLASH_CS_Pin, GPIO_PIN_RESET);
+  HAL_SPI_Transmit(&hspi2, &flash_rst, 1, 100);
+  HAL_GPIO_WritePin(FLASH_CS_GPIO_Port, FLASH_CS_Pin, GPIO_PIN_SET);
+  flash_rst = 0x99;
+  HAL_GPIO_WritePin(FLASH_CS_GPIO_Port, FLASH_CS_Pin, GPIO_PIN_RESET);
+  HAL_SPI_Transmit(&hspi2, &flash_rst, 1, 100);
+  HAL_GPIO_WritePin(FLASH_CS_GPIO_Port, FLASH_CS_Pin, GPIO_PIN_SET);
+  HAL_Delay(5);
+
+  uint32_t spi_id = W25_ReadID();
+  uint8_t flag[4];
+  W25_Read(OTA_FLAG_ADDR, flag, 4);
+  char id_buf[60];
+  int id_n = snprintf(id_buf, sizeof(id_buf),
+      "ID:%06lX FLAG:%02X%02X%02X%02X\r\n",
+      spi_id, flag[0], flag[1], flag[2], flag[3]);
+  HAL_UART_Transmit(&huart1, (uint8_t *)id_buf, (uint16_t)id_n, 100);
+
+  // SPI 验证通过后再初始化其他外设（DMA、I2C 等）
   MX_DMA_Init();
   MX_I2C1_Init();
-  MX_SPI2_Init();
   MX_ADC1_Init();
   MX_TIM2_Init();
   MX_USART1_UART_Init();
@@ -251,8 +300,9 @@ int main(void)
   HAL_TIM_Base_Start(&htim2);
   HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc_buf, ADC_BUF_SIZE);
 
+  // UART TX 测试：启动时发一串字符，验证发送功能
   memset(uart_rx_buf, 0, sizeof(uart_rx_buf));
-  HAL_UARTEx_ReceiveToIdle_IT(&huart1, uart_rx_buf, sizeof(uart_rx_buf));
+  HAL_UART_Receive_IT(&huart1, uart_rx_buf, 1);
   /* USER CODE END 2 */
 
   /* Init scheduler */
@@ -268,62 +318,7 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    static uint32_t last_oled_tick = 0;
-    if (HAL_GetTick() - last_oled_tick > 200)
-    {
-      last_oled_tick = HAL_GetTick();
 
-      HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
-
-      float ax, ay, az, Pitch, Roll;
-      MPU6050_Read_Accel(&ax, &ay, &az);
-      MPU6050_Cacul_Tangle(&Pitch, &Roll, &ax, &ay, &az);
-
-      char *state_str;
-      switch (state_now)
-      {
-      case STATE_DARK:  state_str = "Dark "; break;
-      case STATE_DIM:   state_str = "Dim  "; break;
-      case STATE_IDEAL: state_str = "Ideal"; break;
-      case STATE_GLARE: state_str = "Glare"; break;
-      default:          state_str = "ERROR"; break;
-      }
-      OLED_ShowString(0, 0, state_str);
-
-      char line[22];
-      char num[8];
-      strcpy(line, "ax:");
-      ftoa_2dp(num, ax);
-      strcat(line, num);
-      strcat(line, " P:");
-      ftoa_2dp(num, Pitch);
-      strcat(line, num);
-      OLED_ShowString(0, 1, line);
-
-      strcpy(line, "ay:");
-      ftoa_2dp(num, ay);
-      strcat(line, num);
-      strcat(line, " R:");
-      ftoa_2dp(num, Roll);
-      strcat(line, num);
-      OLED_ShowString(0, 2, line);
-
-      strcpy(line, "az:");
-      ftoa_2dp(num, az);
-      strcat(line, num);
-      char sec_buf[10];
-      my_itoa(today_dark_sec, sec_buf);
-      sec_buf[strlen(sec_buf) - 2] = '\0';
-      strcat(line, " D:");
-      strcat(line, sec_buf);
-      OLED_ShowString(0, 3, line);
-    }
-
-    if (rx_flag && change_message_flag)
-    {
-      HAL_UART_Transmit(&huart1, (uint8_t *)uart_msg, strlen(uart_msg), HAL_MAX_DELAY);
-      change_message_flag = 0;
-    }
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */

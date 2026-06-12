@@ -1,5 +1,6 @@
 # Build
 build/
+bootloader/build/
 compile_commands.json
 
 # Binary

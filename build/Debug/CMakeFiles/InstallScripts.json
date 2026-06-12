@@ -1,8 +1,0 @@
-{
-	"InstallScripts" : 
-	[
-		"/home/kaiwen/projects/stm32/gcctest/build/Debug/cmake_install.cmake",
-		"/home/kaiwen/projects/stm32/gcctest/build/Debug/cmake/stm32cubemx/cmake_install.cmake"
-	],
-	"Parallel" : false
-}
