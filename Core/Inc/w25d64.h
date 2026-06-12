@@ -17,7 +17,7 @@
 #define W25_SECTOR_SIZE  4096
 
 // 对外接口函数
-void     W25_Init(void);
+HAL_StatusTypeDef     W25_Init(void);
 uint32_t W25_ReadID(void);
 void     W25_Read(uint32_t addr, uint8_t *buf, uint32_t len);
 void     W25_WritePage(uint32_t addr, const uint8_t *data, uint16_t len);

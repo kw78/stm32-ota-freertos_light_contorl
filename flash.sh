@@ -16,6 +16,7 @@
 #   ./flash.sh --gdb Release                烧录 Release + 启动 GDB
 #   ./flash.sh --gdb path/to/firmware.elf   烧录指定文件 + GDB
 #   ./flash.sh --init                初始化项目配置（CMake + .vscode + .gitignore）
+#   ./flash.sh --uart                       检测/挂载串口（WSL 兼容）
 #   ./flash.sh --install-udev               安装 ST-Link udev 规则
 #
 
@@ -411,9 +412,108 @@ find_gdb() {
 }
 
 # ========================
+# UART 串口自动检测与挂载（WSL 兼容）
+# ========================
+# 常见 USB 转串口芯片 VID:PID
+UART_USB_IDS=(
+    "1a86:7523"   # CH340/CH341
+    "10c4:ea60"   # CP2102/CP2104
+    "0403:6001"   # FTDI FT232
+    "0403:6015"   # FTDI FT231X
+    "067b:2303"   # PL2303
+    "0483:3748"   # ST-Link VCP（虚拟串口）
+)
+
+# 检测 Linux 下的串口设备
+detect_uart_linux() {
+    local ports=()
+    for dev in /dev/ttyUSB* /dev/ttyACM*; do
+        [ -c "$dev" ] && ports+=("$dev")
+    done
+    if [ ${#ports[@]} -eq 1 ]; then
+        UART_PORT="${ports[0]}"
+        return 0
+    elif [ ${#ports[@]} -gt 1 ]; then
+        echo "检测到多个串口:"
+        for i in "${!ports[@]}"; do
+            local INFO=""
+            if command -v udevadm &>/dev/null; then
+                INFO=$(udevadm info --query=property --name="${ports[$i]}" 2>/dev/null | grep "ID_MODEL=" | cut -d= -f2)
+            fi
+            echo "  [$i] ${ports[$i]} ${INFO:+($INFO)}"
+        done
+        read -rp "请选择串口编号 [0]: " choice
+        choice=${choice:-0}
+        UART_PORT="${ports[$choice]}"
+        return 0
+    fi
+    return 1
+}
+
+# WSL 下通过 usbipd 自动挂载 USB 转串口
+mount_uart_wsl() {
+    echo "未检测到串口设备，尝试通过 usbipd (WSL) 挂载..."
+    local USBIPD_OUTPUT
+    USBIPD_OUTPUT=$(powershell.exe -Command "usbipd list" 2>&1)
+
+    # 在 Windows 设备列表中查找 USB 转串口芯片
+    local MATCH_BUSID=""
+    for id in "${UART_USB_IDS[@]}"; do
+        local VID="${id%%:*}"
+        local PID="${id##*:}"
+        MATCH_BUSID=$(echo "$USBIPD_OUTPUT" | grep -i "${VID}" | grep -i "${PID}" | grep -oP '^\s*\S+' | head -1)
+        if [ -n "$MATCH_BUSID" ]; then
+            echo "在总线 $MATCH_BUSID 上找到 USB 转串口设备 ($id)"
+            break
+        fi
+    done
+
+    # 通用匹配：查找 COM 端口对应的设备
+    if [ -z "$MATCH_BUSID" ]; then
+        MATCH_BUSID=$(echo "$USBIPD_OUTPUT" | grep -i "COM[0-9]" | grep -iv "STLink\|0483" | grep -oP '^\s*\S+' | head -1)
+        if [ -n "$MATCH_BUSID" ]; then
+            echo "在总线 $MATCH_BUSID 上找到串口设备"
+        fi
+    fi
+
+    if [ -z "$MATCH_BUSID" ]; then
+        echo "错误: 未找到 USB 转串口设备。"
+        echo "请检查设备是否已连接，或在 Windows 设备管理器中确认 COM 端口号。"
+        return 1
+    fi
+
+    echo "正在挂载 $MATCH_BUSID 到 WSL..."
+    powershell.exe -Command "usbipd attach --wsl --busid $MATCH_BUSID" 2>&1
+    sleep 2
+
+    # 挂载后重新检测
+    if detect_uart_linux; then
+        echo "串口挂载成功: $UART_PORT"
+        return 0
+    else
+        echo "错误: 挂载后仍未检测到串口。"
+        echo "请手动挂载: powershell.exe -Command \"usbipd attach --wsl --busid $MATCH_BUSID\""
+        return 1
+    fi
+}
+
+# 统一入口：检测或挂载串口
+ensure_uart() {
+    if [ -n "$UART_PORT" ]; then
+        return 0
+    fi
+    if detect_uart_linux; then
+        echo "检测到串口: $UART_PORT"
+        return 0
+    fi
+    mount_uart_wsl
+}
+
+# ========================
 # 参数解析
 # ========================
 GDB_MODE=false
+UART_PORT=""
 
 case "$1" in
     --install-udev)
@@ -426,6 +526,13 @@ case "$1" in
         GDB_MODE=true
         shift
         ;;
+    --uart)
+        ensure_uart
+        if [ -n "$UART_PORT" ]; then
+            echo "$UART_PORT"
+        fi
+        exit 0
+        ;;
     --help|-h)
         echo "用法:"
         echo "  ./flash.sh                              烧录 Debug 版 (默认)"
@@ -435,6 +542,7 @@ case "$1" in
         echo "  ./flash.sh --gdb Release                烧录 Release + GDB"
         echo "  ./flash.sh --gdb path/to/firmware.elf   烧录指定文件 + GDB"
         echo "  ./flash.sh --init                初始化项目配置（CMake + .vscode + .gitignore）"
+        echo "  ./flash.sh --uart                       检测/挂载串口（WSL 兼容）"
         echo "  ./flash.sh --install-udev               安装 ST-Link udev 规则"
         echo ""
         echo "GDB 命令行调试:"

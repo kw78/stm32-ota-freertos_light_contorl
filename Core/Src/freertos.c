@@ -28,9 +28,14 @@
 #include "oled.h"
 #include "MPU6050.h"
 #include <string.h>
+#include "w25d64.h"
+#include "usart.h"
+
 extern uint16_t adc_buf[];
 extern volatile LightState_t state_now;
 extern void ftoa_2dp(char *buf, float val);
+extern uint8_t uart_rx_buf[50];
+extern void OTA_Process(void);
 void LightState_Update(uint16_t adc_value);  //函数声明
 /* USER CODE END Includes */
 
@@ -105,6 +110,11 @@ osMessageQueueId_t queue_mpuHandle;
 const osMessageQueueAttr_t queue_mpu_attributes = {
   .name = "queue_mpu"
 };
+/* Definitions for queue_flash */
+osMessageQueueId_t queue_flashHandle;
+const osMessageQueueAttr_t queue_flash_attributes = {
+  .name = "queue_flash"
+};
 /* Definitions for sem_adc_ready */
 osSemaphoreId_t sem_adc_readyHandle;
 const osSemaphoreAttr_t sem_adc_ready_attributes = {
@@ -164,7 +174,10 @@ void MX_FREERTOS_Init(void) {
   queue_lightHandle = osMessageQueueNew (5, sizeof(uint32_t), &queue_light_attributes);
 
   /* creation of queue_mpu */
-  queue_mpuHandle = osMessageQueueNew (16, 20, &queue_mpu_attributes);
+  queue_mpuHandle = osMessageQueueNew (8, 20, &queue_mpu_attributes);
+
+  /* creation of queue_flash */
+  queue_flashHandle = osMessageQueueNew (8, 74, &queue_flash_attributes);
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
@@ -308,10 +321,18 @@ void StartTaskOLED(void *argument)
 void StartTaskLED(void *argument)
 {
   /* USER CODE BEGIN StartTaskLED */
+  LightState_t light;
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+    osMessageQueueGet(queue_lightHandle,&light,0,osWaitForever);
+    switch(state_now)
+    {
+    case STATE_DARK:  osDelay(100); HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin); break;   // 快闪
+    case STATE_DIM:   osDelay(500); HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin); break;
+    case STATE_IDEAL: osDelay(1000); HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin); break;   // 慢闪
+    case STATE_GLARE: osDelay(200); HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin); break;
+    }
   }
   /* USER CODE END StartTaskLED */
 }
@@ -327,9 +348,24 @@ void StartTaskSPIFlash(void *argument)
 {
   /* USER CODE BEGIN StartTaskSPIFlash */
   /* Infinite loop */
+  FlashCmd_t cmd;
   for(;;)
   {
-    osDelay(1);
+    if(osMessageQueueGet(queue_flashHandle,&cmd,0,osWaitForever) == osOK){
+      switch(cmd.cmd){
+        case CMD_SAVE_LIGHT_STATS:
+          W25_EraseSector(cmd.addr);
+          W25_WritePage(cmd.addr,cmd.data,cmd.len);
+          break;
+        case CMD_SAVE_CONFIG:
+          W25_EraseSector(cmd.addr);
+          W25_WritePage(cmd.addr,cmd.data,cmd.len);
+          break;
+        case CMD_SAVE_LOG:
+          W25_WritePage(cmd.addr,cmd.data,cmd.len);
+          break;                  
+      }
+    }
   }
   /* USER CODE END StartTaskSPIFlash */
 }
@@ -347,7 +383,11 @@ void StartTaskUART(void *argument)
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+    // 先获取信号量，然后处理uart_buf
+    osSemaphoreAcquire(sem_uart_rxHandle,osWaitForever);
+
+    OTA_Process();
+    memset(uart_rx_buf,0,sizeof(uart_rx_buf));  // 清空缓冲区
   }
   /* USER CODE END StartTaskUART */
 }

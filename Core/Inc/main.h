@@ -62,7 +62,6 @@ typedef struct {
     uint16_t len;
 } FlashCmd_t;
 
-
 /* USER CODE END ET */
 
 /* Exported constants --------------------------------------------------------*/

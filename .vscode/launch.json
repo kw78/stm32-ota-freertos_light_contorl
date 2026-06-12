@@ -8,7 +8,7 @@
             "cwd": "${workspaceFolder}",
             "executable": "${workspaceFolder}/build/Debug/gcctest.elf",
             "servertype": "openocd",
-            "device": "STM32F103xB",
+            "device": "STM32F103C8T6",
             "interface": "swd",
             "runToMain": true,
             "preLaunchTask": "build-debug",

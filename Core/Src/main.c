@@ -53,7 +53,7 @@
 
 /* USER CODE BEGIN PV */
 static const char *uart_msg = "Hello from STM32!\r\n";
-static uint8_t uart_rx_buf[50];
+uint8_t uart_rx_buf[50];
 static uint8_t rx_flag = 0;
 static uint8_t change_message_flag = 0;
 /* USER CODE END PV */
@@ -69,6 +69,9 @@ void MX_FREERTOS_Init(void);
 /* USER CODE BEGIN 0 */
 extern TIM_HandleTypeDef htim3;
 extern osSemaphoreId_t sem_adc_readyHandle;
+extern osSemaphoreId_t sem_uart_rxHandle;
+extern void OTA_RingBuf_Put(uint8_t byte);
+// 声明要调用的freertos里的句柄
 
 uint8_t my_itoa(uint32_t num, char *buf)
 {
@@ -181,29 +184,18 @@ void ftoa_2dp(char *buf, float val) {
     *p = '\0';
 }
 
+
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
     if (huart->Instance == USART1) {
-        if (uart_rx_buf[0] == 'R') {
-            rx_flag = 1;
-        } else {
-            rx_flag = 0;
+        for (int i = 0; i < Size; i++) {
+            OTA_RingBuf_Put(uart_rx_buf[i]);
         }
-        change_message_flag = 1;
-        memset(uart_rx_buf, 0, sizeof(uart_rx_buf));
+        osSemaphoreRelease(sem_uart_rxHandle);
         HAL_UARTEx_ReceiveToIdle_IT(&huart1, uart_rx_buf, sizeof(uart_rx_buf));
     }
 }
 
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
-    if (huart->Instance == USART1) {
-        if (uart_rx_buf[0] == 'R') {
-            rx_flag = 1;
-        } else {
-            rx_flag = 0;
-        }
-        HAL_UART_Receive_IT(&huart1, uart_rx_buf, 1);
-    }
-}
+
 
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
