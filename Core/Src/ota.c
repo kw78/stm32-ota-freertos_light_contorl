@@ -170,7 +170,7 @@ static void OTA_HandlePacket(uint8_t cmd, const uint8_t *data, uint8_t len)
         uint8_t verify_buf[64];
         W25_Read(OTA_FW_ADDR + ota_bytes_written, verify_buf, len);
         if (memcmp(data, verify_buf, len) != 0) {
-            // 打印前 8 字节对比
+            // 打印前 8 字节对比，给出错误
             char dbg[40];
             int n = snprintf(dbg, sizeof(dbg),
                 "W ERR@%lu: w=%02X%02X%02X r=%02X%02X%02X\r\n",

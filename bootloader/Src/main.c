@@ -148,6 +148,7 @@ static void __attribute__((naked)) jump_to_app(void){
         : "r0", "r1", "r2"
     );
 }
+// debug得出
 
 // 搬运固件，带回读校验，返回 0=成功, -1=写入失败, -2=回读校验失败
 static int copy_firmware(uint32_t src_addr, uint32_t dst_addr, uint32_t size){
@@ -169,6 +170,7 @@ static int copy_firmware(uint32_t src_addr, uint32_t dst_addr, uint32_t size){
         // 回读内部 Flash 并对比
         memcpy(readback, (void *)(dst_addr + pos), chunk);
         if(memcmp(buf, readback, chunk) != 0){
+            // 如果不同，返回-2
             HAL_FLASH_Lock();
             return -2;
         }
@@ -212,26 +214,27 @@ int main(void)
         }
         calc_crc = ~calc_crc;
 
-        // 合法性检查：栈顶地址必须在 RAM 范围内（0x20000000 ~ 0x20005000）
+        // 合法性检查：栈顶地址必须在 RAM 范围内
         uint32_t app_sp;
         W25_Read(OTA_FW_ADDR, (uint8_t *)&app_sp, 4);
         int sp_valid = (app_sp >= 0x20000000 && app_sp <= 0x20005000);
 
         if (calc_crc == flag.fw_crc32 && sp_valid)
         {
-            // CRC 匹配且固件合法 → 搬运 + 回读校验
+            // CRC 匹配且固件合法
             int copy_ret = copy_firmware(OTA_FW_ADDR, APP_START_ADDR, flag.fw_size);
             if (copy_ret == 0) {
-                // 搬运成功且校验通过 → 清除 OTA 标志
+                // 搬运成功且校验通过
                 flag.state = OTA_STATE_IDLE;
                 W25_EraseSector(OTA_FLAG_ADDR);
                 W25_WritePage(OTA_FLAG_ADDR, (uint8_t *)&flag, sizeof(flag));
+                // 重写flag
             }
             // copy_ret != 0 时保留 PENDING 标志，下次复位重试
         }
         else
         {
-            // CRC 不匹配或固件非法 → 清除标志，不搬运
+            // CRC 不匹配或固件非法
             flag.state = OTA_STATE_IDLE;
             W25_EraseSector(OTA_FLAG_ADDR);
             W25_WritePage(OTA_FLAG_ADDR, (uint8_t *)&flag, sizeof(flag));
