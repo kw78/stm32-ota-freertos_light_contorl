@@ -73,7 +73,7 @@ extern osSemaphoreId_t sem_uart_rxHandle;
 extern void OTA_RingBuf_Put(uint8_t byte);
 // 声明要调用的freertos里的句柄
 
-#define ADC_BUF_SIZE 10
+#define ADC_BUF_SIZE 100
 uint16_t adc_buf[ADC_BUF_SIZE];
 
 #define DARK_EXIT 2800
@@ -263,6 +263,29 @@ int main(void)
 
   // SPI 验证通过后再初始化其他外设（DMA、I2C 等）
   MX_DMA_Init();
+
+  // I2C 总线恢复：OTA 复位可能发生在 I2C 通信中途，OLED/MPU6050 的 SDA 被拉低导致总线锁死
+  {
+    GPIO_InitTypeDef gpio = {0};
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    gpio.Pin = GPIO_PIN_6;
+    gpio.Mode = GPIO_MODE_OUTPUT_OD;
+    gpio.Speed = GPIO_SPEED_FREQ_HIGH;
+    HAL_GPIO_Init(GPIOB, &gpio);
+    gpio.Pin = GPIO_PIN_7;
+    gpio.Mode = GPIO_MODE_INPUT;
+    gpio.Pull = GPIO_PULLUP;
+    HAL_GPIO_Init(GPIOB, &gpio);
+    for (int i = 0; i < 9; i++) {
+      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_RESET);
+      for (volatile int d = 0; d < 50; d++);
+      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_SET);
+      for (volatile int d = 0; d < 50; d++);
+    }
+    HAL_GPIO_DeInit(GPIOB, GPIO_PIN_6);
+    HAL_GPIO_DeInit(GPIOB, GPIO_PIN_7);
+  }
+
   MX_I2C1_Init();
   MX_ADC1_Init();
   MX_TIM2_Init();
