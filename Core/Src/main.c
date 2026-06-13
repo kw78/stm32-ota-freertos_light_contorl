@@ -133,6 +133,7 @@ void LightState_Update(uint16_t adc_value)
         else
         {
             state_now = state_target;
+            state_target = state_now;  // 重置 target，防止下一轮立即触发
             change = 0;
         }
     }
