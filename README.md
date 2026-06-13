@@ -229,7 +229,7 @@ sudo python3 tools/ota_upload.py /dev/ttyUSB0 build/Debug/gcctest.bin 115200
 
 ## 遇到的技术难题
 
-共 8 个高难度 Bug，完整调试过程记录在 [BUGS.md](BUGS.md)：
+共 9 个高难度 Bug，完整调试过程记录在 [BUGS.md](BUGS.md)：
 
 | # | 问题 | 根因 | 修复 |
 |---|------|------|------|
@@ -241,3 +241,4 @@ sudo python3 tools/ota_upload.py /dev/ttyUSB0 build/Debug/gcctest.bin 115200
 | 6 | Bootloader 跳转 App 后 HardFault | C 函数 push/pop 在 MSP 修改后导致栈越界 | naked + 内联汇编 |
 | 7 | SPI 读回值每次不同（bit 翻转） | 面包板信号完整性（寄生电容串扰） | 杜邦线直连 + 去耦电容 |
 | 8 | Task_OLED/Task_LED 不执行 | 高优先级 Task_Light 缺 osDelay 饿死低优先级任务 | 加 osDelay(10) |
+| 9 | OTA 后设备卡死在 DMA 中断 | DMA 优先级=FreeRTOS 阈值 + ADC 启动在信号量创建之前 | DMA 优先级改 7 + 移动启动顺序 |

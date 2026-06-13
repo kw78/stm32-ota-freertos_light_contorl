@@ -459,7 +459,7 @@ static void __attribute__((naked)) jump_to_app(void){
 
 ### 教训
 
-> **Cortex-M Bootloader 跳转是嵌入式领域最经典的 Bug 之一。** 核心问题：C 编译器为普通函数生成的 prologue（`push {r4}`）和 epilogue（`pop {r4}`）假定整个函数执行期间栈指针不变。但 `jump_to_app` 需要在函数执行中途修改 MSP——这违反了编译器的假设。`__attribute__((naked))` 是 C 语言提供的唯一解决方案，它告诉编译器"不要帮我生成任何序言和尾声"，让开发者完全控制指令序列。这在 ARM Cortex-M 的 Bootloader、RTOS 上下文切换、中断返回等场景中是**必须掌握的技巧**。
+> **Cortex-M Bootloader 跳转是嵌入式领域最经典的 Bug 之一。** 核心问题：C 编译器为普通函数生成的 prologue（`push {r4}`）和 epilogue（`pop {r4}`）假定整个函数执行期间栈指针不变。但 `jump_to_app` 需要在函数执行中途修改 MSP——这违反了编译器的假设。`__attribute__((naked))` 是 C 语言提供的唯一解决方案，它告诉编译器"不要帮我生成任何序言和尾声".
 
 > 额外教训：**GDB 设断点时能跑、不设断点时崩溃**是经典的海森堡效应。硬件断点暂停 CPU 后恢复执行，改变了 Flash/SRAM 的访问时序和中断 pending 状态，恰好避开了 `pop {r3}` 越界触发 BusFault 的路径。调试这类问题时，**反汇编分析比 GDB 单步跟踪更可靠**——因为 GDB 的观测行为本身可能改变被观测系统。
 
@@ -504,8 +504,8 @@ OTA 上传 32KB 固件时，SPI Flash 写入验证失败。每次读回的数据
 ### 修复
 
 1. **杜邦线直连**：将 SPI Flash 从面包板改为杜邦线直接连接 STM32 和 W25D64 芯片引脚，信号路径缩短到 ~3cm
-2. **去耦电容**：在 W25D64 的 VCC-GND 之间焊接 100nF 陶瓷电容，紧贴芯片引脚
-3. **降低 SPI 时钟**：从 16MHz 降至 4MHz 作为备选方案（时钟频率越低，对信号完整性要求越低）
+
+2. **降低 SPI 时钟**：从 16MHz 降至 4MHz 作为备选方案（时钟频率越低，对信号完整性要求越低）
 
 修复后 SPI 通信完全稳定，OTA 上传 32KB 固件 100% 成功。
 
@@ -564,6 +564,91 @@ void StartTaskLight(void *argument)
 ### 教训
 
 > **RTOS 中，"正确"不等于"好用"。** 即使任务逻辑正确、优先级合理，如果高优先级任务的执行频率太高且没有主动让出 CPU，低优先级任务会被饿死。`osDelay` / `vTaskDelay` 不仅是"等一等"，更是在**主动释放 CPU 时间片**给其他任务——这是 RTOS 调度的核心概念：**协作式让出 + 抢占式响应**。在裸机开发中，`while(1)` 循环配合 `HAL_Delay` 就能工作，但在 RTOS 中，每个任务都必须有明确的"让出点"。
+
+---
+
+## Bug #9：DMA 中断优先级边界 + 初始化顺序 — 双重潜伏 Bug
+
+### 现象
+
+OTA 上传新固件后设备复位，OLED 不更新、LED 不闪、串口无响应。用 OpenOCD halt 后发现 MCU 卡死在 `DMA1_Channel1_IRQHandler` 中，反复读取 PC 永远是同一个地址（`0x0800a014` 或 `0x08004f12`，取决于固件版本），说明 DMA 中断在无限循环。
+
+### 调试思路
+
+1. **确认卡死位置**：连续 halt 5 次，PC 始终在 `DMA1_Channel1_IRQHandler` → `HAL_DMA_IRQHandler`，说明 DMA 中断处理函数无法正常返回。
+
+2. **检查异常帧**：xPSR = `0x6100001b`，ISR 号 27 = DMA1_Channel1。MSP 不变 → CPU 在 ISR 中打转，没有返回到 Thread mode。
+
+3. **分析中断处理链**：
+   ```
+   DMA 传输完成 → DMA1_Channel1_IRQHandler()
+     → HAL_DMA_IRQHandler(&hdma_adc1)
+       → HAL_ADC_ConvCpltCallback()
+         → osSemaphoreRelease(sem_adc_readyHandle)
+   ```
+
+4. **检查信号量状态**：`sem_adc_readyHandle` 在 `MX_FREERTOS_Init()` 中创建（line 287），但 `HAL_ADC_Start_DMA()` 在 line 278 就启动了 DMA。DMA 中断在 `MX_FREERTOS_Init()` **之前**触发时，`sem_adc_readyHandle` 还是 NULL。
+
+5. **追踪 configASSERT**：`osSemaphoreRelease(NULL)` → 内部 `xQueueSendFromISR(NULL, ...)` → `configASSERT(xQueue)` 失败 → `taskDISABLE_INTERRUPTS(); for(;;);`。
+
+6. **关键发现——为什么中断无法屏蔽**：`taskDISABLE_INTERRUPTS()` 设置 BASEPRI = `configMAX_SYSCALL_INTERRUPT_PRIORITY` = `6 << 4 = 0x60`。BASEPRI 屏蔽优先级数值 ≤ 0x5F 的中断。但 DMA 中断优先级 = 6 = `configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY`，正好等于阈值，**不被 BASEPRI 屏蔽**。DMA 中断持续触发 → 每次触发都进入 `configASSERT` 死循环 → 永远无法恢复。
+
+### 根因
+
+两个 Bug 叠加：
+
+**Bug A：初始化顺序错误**
+
+```c
+HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc_buf, ADC_BUF_SIZE);  // ← DMA 启动
+// ...
+osKernelInitialize();   // ← FreeRTOS 内核初始化
+MX_FREERTOS_Init();     // ← 信号量在这里才创建
+osKernelStart();        // ← 调度器启动
+```
+
+DMA 在信号量创建之前就启动了。ADC 转换完成触发 DMA 中断 → 回调中调 `osSemaphoreRelease(NULL)` → `configASSERT` 崩溃。
+
+**Bug B：DMA 中断优先级 = FreeRTOS 临界区阈值**
+
+```c
+// dma.c
+HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 6, 0);  // 优先级 = 6
+
+// FreeRTOSConfig.h
+#define configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY 6  // 阈值 = 6
+```
+
+FreeRTOS 的 `BASEPRI` 临界区只能屏蔽优先级数值 **>** 阈值的中断。优先级 = 阈值的中断**不在屏蔽范围内**。当 `configASSERT` 触发 `taskDISABLE_INTERRUPTS()` 时，DMA 中断（优先级 6）继续触发 → 死循环无法恢复。
+
+### 修复
+
+**修复 A：移动 DMA 启动到 FreeRTOS 初始化之后**
+
+```c
+osKernelInitialize();
+MX_FREERTOS_Init();          // 信号量、队列在这里创建
+
+HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc_buf, ADC_BUF_SIZE);  // DMA 现在才启动
+
+osKernelStart();
+```
+
+**修复 B：DMA 中断优先级改为 7**
+
+```c
+// dma.c — 所有 DMA 通道优先级改为 7
+HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 7, 0);  // 7 > 6，可以安全调用 FreeRTOS API
+HAL_NVIC_SetPriority(DMA1_Channel4_IRQn, 7, 0);
+HAL_NVIC_SetPriority(DMA1_Channel5_IRQn, 7, 0);
+HAL_NVIC_SetPriority(DMA1_Channel6_IRQn, 7, 0);
+```
+
+### 教训
+
+> **Bug A（初始化顺序）**：外设中断的启动必须在对应的 IPC 对象（信号量、队列）创建之后。裸机开发中不存在这个问题（中断回调直接处理数据），但 RTOS 中断回调依赖内核对象，必须保证内核对象先存在。这是一个**时序依赖**问题——代码能编译、能烧录、甚至能短暂运行，但在特定时序下崩溃。
+
+> **Bug B（优先级边界）**：FreeRTOS 的 `BASEPRI` 临界区使用 **严格大于**（`>`）而非大于等于（`>=`）来判断哪些中断可以调用 API。CubeMX 默认给 DMA 分配优先级 5 或 6，恰好踩在边界上。**STM32 + FreeRTOS 项目中，所有需要调用 FreeRTOS API 的中断，优先级必须设为 `configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY + 1` 或更大。** 这个规则在 Bug #3 中已经记录过，但 CubeMX 重新生成代码时会覆盖手动修改，导致 Bug 复发。
 
 ---
 

@@ -34,7 +34,7 @@
 extern uint16_t adc_buf[];
 extern volatile LightState_t state_now;
 extern void ftoa_2dp(char *buf, float val);
-extern uint8_t uart_rx_buf[];
+extern uint8_t uart_rx_buf[128];
 extern void OTA_Process(void);
 void LightState_Update(uint16_t adc_value);  //函数声明
 /* USER CODE END Includes */

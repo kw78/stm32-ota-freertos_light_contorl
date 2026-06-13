@@ -77,12 +77,12 @@ extern void OTA_RingBuf_Put(uint8_t byte);
 uint16_t adc_buf[ADC_BUF_SIZE];
 
 #define DARK_EXIT 2800
-#define DIM_DOWN 1800
+#define DIM_DOWN 1600
 #define DIM_UP 3000
 #define IDEAL_DOWN 1000
-#define IDEAL_UP 1500
+#define IDEAL_UP 1200
 #define GLARE_EXIT 800
-#define DEBOUNCE_COUNT 5
+#define DEBOUNCE_COUNT 10
 
 volatile LightState_t state_now = STATE_DARK;
 
@@ -92,11 +92,13 @@ void LightState_Update(uint16_t adc_value)
     static uint8_t first_flag = 0;
     if (first_flag == 0)
     {
-        if (adc_value < DARK_EXIT)
+        if (adc_value >= DARK_EXIT)
+            state_target = state_now = STATE_DARK;
+        else if (adc_value >= DIM_DOWN)
             state_target = state_now = STATE_DIM;
-        else if (adc_value < DIM_DOWN)
+        else if (adc_value >= IDEAL_DOWN)
             state_target = state_now = STATE_IDEAL;
-        else if (adc_value < IDEAL_DOWN)
+        else
             state_target = state_now = STATE_GLARE;
         first_flag++;
     }
@@ -109,14 +111,14 @@ void LightState_Update(uint16_t adc_value)
     case STATE_DIM:
         if (adc_value > DIM_UP)
             state_target = STATE_DARK;
-        if (adc_value < DIM_DOWN)
+        else if (adc_value < IDEAL_UP)
             state_target = STATE_IDEAL;
         break;
     case STATE_IDEAL:
-        if (adc_value > IDEAL_UP)
-            state_target = STATE_DIM;
         if (adc_value < IDEAL_DOWN)
             state_target = STATE_GLARE;
+        else if (adc_value > DIM_DOWN)
+            state_target = STATE_DIM;
         break;
     case STATE_GLARE:
         if (adc_value > GLARE_EXIT)
@@ -133,7 +135,7 @@ void LightState_Update(uint16_t adc_value)
         else
         {
             state_now = state_target;
-            state_target = state_now;  // 重置 target，防止下一轮立即触发
+            state_target = state_now;
             change = 0;
         }
     }
@@ -273,9 +275,8 @@ int main(void)
 
   HAL_TIM_Base_Start_IT(&htim3);
   HAL_TIM_Base_Start(&htim2);
-  HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc_buf, ADC_BUF_SIZE);
 
-  // UART TX 测试：启动时发一串字符，验证发送功能
+  // UART RX 中断启动
   memset(uart_rx_buf, 0, sizeof(uart_rx_buf));
   HAL_UART_Receive_IT(&huart1, uart_rx_buf, 1);
   /* USER CODE END 2 */
@@ -283,6 +284,9 @@ int main(void)
   /* Init scheduler */
   osKernelInitialize();  /* Call init function for freertos objects (in cmsis_os2.c) */
   MX_FREERTOS_Init();
+
+  /* Start ADC DMA after FreeRTOS init (semaphores must exist before ISR fires) */
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc_buf, ADC_BUF_SIZE);
 
   /* Start scheduler */
   osKernelStart();
