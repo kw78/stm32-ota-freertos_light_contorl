@@ -1,6 +1,7 @@
 #include "ota.h"
 #include "w25d64.h"
 #include "blackbox.h"
+#include "light_ctrl.h"
 #ifdef USE_FREERTOS
 #include "cmsis_os.h"
 #endif
@@ -375,6 +376,19 @@ static void OTA_HandlePacket(uint8_t cmd, const uint8_t *data, uint8_t len)
             OTA_SendPacket(CMD_GET_LOG, (const uint8_t *)&rec, sizeof(rec));
         else
             OTA_SendPacket(CMD_GET_LOG, (const uint8_t *)"", 0);
+    } break;
+
+    case CMD_LIGHT_CTRL: {
+        /* DATA: enable(1B) + target_adc(2B LE, 0=默认 IDEAL 频带) */
+        if (len < 3) { OTA_SendByte(nack); break; }
+        uint8_t  en  = data[0];
+        uint16_t tgt = (uint16_t)(data[1] | ((uint16_t)data[2] << 8));
+        if (en > 1) { OTA_SendByte(nack); break; }
+        LightCtrl_SetEnable(en, tgt);
+        char msg[48];
+        int n = snprintf(msg, sizeof(msg), "DIM %s\r\n", en ? "ON" : "OFF");
+        HAL_UART_Transmit(&huart1, (uint8_t *)msg, (uint16_t)n, 100);
+        OTA_SendByte(ack);
     } break;
     }
 }

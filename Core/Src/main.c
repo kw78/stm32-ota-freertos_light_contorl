@@ -34,6 +34,7 @@
 #include "w25d64.h"
 #include "ota.h"
 #include "supervisor.h"
+#include "light_ctrl.h"
 #include <string.h>
 #include <stdio.h>
 /* USER CODE END Includes */
@@ -320,6 +321,9 @@ int main(void)
   HAL_TIM_Base_Start_IT(&htim3);
   HAL_TIM_Base_Start(&htim2);
 
+  /* TIM3 重构为 1kHz PWM 载波（调光用），统计回调改为千分频计数（见下方回调） */
+  LightCtrl_Init();
+
   // UART RX 中断启动
   memset(uart_rx_buf, 0, sizeof(uart_rx_buf));
   HAL_UART_Receive_IT(&huart1, uart_rx_buf, 1);
@@ -347,6 +351,9 @@ int main(void)
       HAL_UART_Transmit(&huart1, (uint8_t *)err, sizeof(err) - 1, 100);
     }
   }
+
+  /* 调光控制定时器（默认关闭，等 CMD_LIGHT_CTRL 指令才介入） */
+  LightCtrl_Start();
 
   /* Start ADC DMA after FreeRTOS init (semaphores must exist before ISR fires) */
   HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc_buf, ADC_BUF_SIZE);
@@ -430,29 +437,35 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   /* USER CODE BEGIN Callback 0 */
   if (htim->Instance == TIM3)
   {
-    switch (state_now)
+    /* TIM3 已重构为 1kHz（LightCtrl_Init），千分频恢复 1 秒节拍 */
+    static uint16_t tim3_sub = 0;
+    if (++tim3_sub >= 1000)
     {
-    case STATE_DARK:
-      today_dark_sec++;
-      break;
-    case STATE_DIM:
-      today_dim_sec++;
-      break;
-    case STATE_IDEAL:
-      today_ideal_sec++;
-      break;
-    case STATE_GLARE:
-      today_glare_sec++;
-      break;
-    }
-    seconds_today++;
-    if (seconds_today >= 86400)
-    {
-      seconds_today = 0;
-      today_dark_sec = 0;
-      today_dim_sec = 0;
-      today_ideal_sec = 0;
-      today_glare_sec = 0;
+      tim3_sub = 0;
+      switch (state_now)
+      {
+      case STATE_DARK:
+        today_dark_sec++;
+        break;
+      case STATE_DIM:
+        today_dim_sec++;
+        break;
+      case STATE_IDEAL:
+        today_ideal_sec++;
+        break;
+      case STATE_GLARE:
+        today_glare_sec++;
+        break;
+      }
+      seconds_today++;
+      if (seconds_today >= 86400)
+      {
+        seconds_today = 0;
+        today_dark_sec = 0;
+        today_dim_sec = 0;
+        today_ideal_sec = 0;
+        today_glare_sec = 0;
+      }
     }
   }
   /* USER CODE END Callback 0 */

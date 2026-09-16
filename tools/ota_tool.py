@@ -34,6 +34,7 @@ CMD_OTA_DATA  = 0x02
 CMD_OTA_END   = 0x03
 CMD_QUERY     = 0x10
 CMD_GET_LOG   = 0x12
+CMD_LIGHT_CTRL = 0x20
 
 LOG_BLACKBOX  = 1
 LOG_STATS     = 2
@@ -244,6 +245,29 @@ def cmd_log(args) -> int:
     return 0
 
 
+def cmd_dim(args) -> int:
+    if serial is None:
+        print("错误: 缺少 pyserial（pip install pyserial）")
+        return 1
+    enable = 1 if args.action == 'on' else 0
+    ser = serial.Serial(args.port, args.baud, timeout=1)
+    time.sleep(0.1)
+    ser.reset_input_buffer()
+    data = struct.pack('<BH', enable, args.target)
+    ser.write(make_packet_v2(CMD_LIGHT_CTRL, data))
+    if not wait_ack(ser, 3):
+        print("调光指令失败（设备忙或协议不支持）")
+        ser.close()
+        return 1
+    mode = ('开启：LED→执行器，PI 控制器把 ADC 稳定在目标频带'
+            if enable else '关闭：LED 恢复状态指示灯闪烁')
+    print(f"调光已{'开启' if enable else '关闭'}。{mode}")
+    if enable:
+        print(f"目标 ADC = {args.target or '默认 IDEAL 频带 [1000,1200]'}")
+    ser.close()
+    return 0
+
+
 def cmd_upload(args) -> int:
     if serial is None:
         print("错误: 缺少 pyserial（pip install pyserial）")
@@ -337,6 +361,14 @@ def main():
     p_l.add_argument('baud', nargs='?', type=int, default=115200)
     p_l.add_argument('--kind', choices=['blackbox', 'stats'], default='blackbox')
     p_l.set_defaults(func=cmd_log)
+
+    p_d = sub.add_parser('dim', help='光照闭环调光开关')
+    p_d.add_argument('port', help='串口')
+    p_d.add_argument('action', choices=['on', 'off'])
+    p_d.add_argument('baud', nargs='?', type=int, default=115200)
+    p_d.add_argument('--target', type=int, default=0,
+                     help='目标 ADC 值 200-4000（0=默认 IDEAL 频带）')
+    p_d.set_defaults(func=cmd_dim)
 
     args = parser.parse_args()
     sys.exit(args.func(args))
