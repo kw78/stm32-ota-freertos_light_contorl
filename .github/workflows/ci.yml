@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  push:
+    branches: [master, "fix/**", "feat/**"]
+  pull_request:
+    branches: [master]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi cmake ninja-build
+
+      - name: Build app
+        run: |
+          cmake --preset Debug
+          cmake --build build/Debug
+
+      - name: Build bootloader
+        run: |
+          cd bootloader
+          cmake -B build -DCMAKE_TOOLCHAIN_FILE=../cmake/gcc-arm-none-eabi.cmake
+          cmake --build build
+
+      - name: Size gate + manifest
+        run: |
+          arm-none-eabi-objcopy -O binary build/Debug/gcctest.elf /tmp/app.bin
+          arm-none-eabi-objcopy -O binary bootloader/build/bootloader.elf /tmp/boot.bin
+          python3 tools/ci_manifest.py /tmp/app.bin /tmp/boot.bin
+          cat build/manifest.json
+
+      - name: Upload manifest artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: manifest
+          path: build/manifest.json

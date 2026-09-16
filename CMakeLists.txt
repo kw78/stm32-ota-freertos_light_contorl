@@ -48,7 +48,24 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/oled.c              
     Core/Src/MPU6050.c
     Core/Src/w25d64.c
-    Core/Src/ota.c   
+    Core/Src/ota.c
+    Core/Src/supervisor.c
+)
+
+# 固件版本注入：git short hash（构建时生成，QUERY / 串口 banner 可读）
+# 找不到 git（如无 .git 目录的拷贝构建）时退化为 0xdeadbeef
+execute_process(
+    COMMAND git -C ${CMAKE_CURRENT_SOURCE_DIR} rev-parse --short=8 HEAD
+    OUTPUT_VARIABLE GIT_HASH
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+    RESULT_VARIABLE GIT_RESULT
+)
+if(NOT GIT_RESULT EQUAL 0 OR GIT_HASH STREQUAL "")
+    set(GIT_HASH "deadbeef")
+endif()
+target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
+    APP_VERSION=0x${GIT_HASH}
 )
 
 # Add include paths

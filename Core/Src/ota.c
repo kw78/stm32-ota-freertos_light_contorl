@@ -12,7 +12,8 @@
 
 extern UART_HandleTypeDef huart1;
 
-static uint8_t ack = 0x06;        
+static uint8_t ack = 0x06;        // ACK
+static uint8_t nack = 0x15;       // NACK
 
 // 循环缓冲区
 typedef struct {
@@ -26,6 +27,7 @@ typedef enum {
     PKT_WAIT_HEADER,
     PKT_WAIT_CMD,
     PKT_WAIT_LEN,
+    PKT_WAIT_SEQ,       // v2：2 字节序号（低在前）
     PKT_WAIT_DATA,
     PKT_WAIT_CRC
 } PktState_t;
@@ -82,13 +84,14 @@ static int RingBuf_Get(uint8_t *byte)       // 无需外部访问
 {
     if (ring_buf.head == ring_buf.tail) return 0;       // 初始状态
     *byte = ring_buf.buf[ring_buf.tail];        // 取出字段tail写入byte
-    ring_buf.tail = (ring_buf.tail + 1) % RING_BUF_SIZE;        
+    ring_buf.tail = (ring_buf.tail + 1) % RING_BUF_SIZE;
     return 1;
 }
 
 // 循环缓冲状态机简化
 static PktState_t pkt_state = PKT_WAIT_HEADER;
 static uint8_t pkt_cmd, pkt_len, pkt_idx;
+static uint16_t pkt_seq = 0;                     // v2 包序号
 static uint8_t pkt_buf[PKT_DATA_MAX];     // 最多64字节一次
 static uint32_t pkt_start_tick = 0;       // 当前包第一个字节的时刻（超时重同步用）
 
@@ -126,7 +129,18 @@ static int Pkt_ParseByte(uint8_t byte)
         }
         pkt_len = byte;
         pkt_idx = 0;
-        pkt_state = (pkt_len > 0) ? PKT_WAIT_DATA : PKT_WAIT_CRC;
+        pkt_state = PKT_WAIT_SEQ;   // v2：所有命令帧 LEN 后跟 2 字节 SEQ
+        break;
+    case PKT_WAIT_SEQ:
+        // v2：DATA 帧在 LEN 之后有 2 字节小端序号
+        if (pkt_idx == 0) {
+            pkt_seq = byte;
+            pkt_idx = 1;
+        } else {
+            pkt_seq |= (uint16_t)byte << 8;
+            pkt_idx = 0;
+            pkt_state = (pkt_len > 0) ? PKT_WAIT_DATA : PKT_WAIT_CRC;
+        }
         break;
     case PKT_WAIT_DATA:
         if (pkt_idx < sizeof(pkt_buf)) pkt_buf[pkt_idx] = byte;
@@ -140,15 +154,17 @@ static int Pkt_ParseByte(uint8_t byte)
             crc_hi = byte;            // 第 1 字节：CRC 高字节
             crc_byte_idx = 1;
         } else {
-           uint16_t received_crc = (crc_hi << 8) | byte;  // 第 2 字节：CRC 低字节
+            uint16_t received_crc = (crc_hi << 8) | byte;  // 第 2 字节：CRC 低字节
             crc_byte_idx = 0;
 
-           // 计算包内容的 CRC16
-            uint8_t tmp[2 + PKT_DATA_MAX];
+            // 计算包内容的 CRC16（v2 覆盖 cmd+len+seq+data）
+            uint8_t tmp[4 + PKT_DATA_MAX];
             tmp[0] = pkt_cmd;
             tmp[1] = pkt_len;
-            memcpy(tmp + 2, pkt_buf, pkt_len);
-            uint16_t calc_crc = crc16_compute(tmp, 2 + pkt_len);
+            tmp[2] = (uint8_t)(pkt_seq & 0xFF);
+            tmp[3] = (uint8_t)(pkt_seq >> 8);
+            memcpy(tmp + 4, pkt_buf, pkt_len);
+            uint16_t calc_crc = crc16_compute(tmp, 4 + pkt_len);
 
             // 无论校验是否通过都必须回到帧头等待状态，
             // 否则状态机卡死在 PKT_WAIT_CRC，后续所有包都被当作 CRC 字节吞掉
@@ -156,131 +172,194 @@ static int Pkt_ParseByte(uint8_t byte)
             if (calc_crc == received_crc) {
                 return 1;   // CRC 正确，完整包
             }
-           // CRC 错误，丢弃
+            // CRC 错误，丢弃
         }
         break;
     }
     return 0;
 }
 
-// 处理一个完整包
+// 会话状态
 static uint32_t ota_fw_size = 0;        // 固件总大小（START 时记录）
 static uint32_t ota_fw_crc32 = 0;       // 固件 CRC32（START 时记录）
+static uint32_t ota_fw_version = 0;     // 固件版本（START 时记录）
 static uint32_t ota_bytes_written = 0;  // 已写入字节数（DATA 时递增）
-static uint8_t  ota_active = 0;         // 会话标志：START 置位，END/出错复位
 
 static void OTA_SendByte(uint8_t b)
 {
     HAL_UART_Transmit(&huart1, &b, 1, 100);
 }
 
+static void OTA_SendBuf(const uint8_t *buf, uint16_t len)
+{
+    HAL_UART_Transmit(&huart1, buf, len, 100);
+}
+
+static void OTA_SendPacket(uint8_t cmd, const uint8_t *data, uint8_t len)
+{
+    uint8_t frame[4 + PKT_DATA_MAX + 2];
+    uint8_t n = 0;
+    frame[n++] = PKT_HEADER;
+    frame[n++] = cmd;
+    frame[n++] = len;
+    frame[n++] = 0;              // SEQ 低（响应包不用）
+    frame[n++] = 0;              // SEQ 高
+    memcpy(frame + n, data, len);
+    n += len;
+    uint16_t crc = crc16_compute(frame + 1, 4u + len);   // CRC 覆盖 cmd+len+seq(2)+data
+    frame[n++] = (uint8_t)(crc >> 8);
+    frame[n++] = (uint8_t)(crc & 0xFF);
+    OTA_SendBuf(frame, n);
+}
+
+// 处理一个完整包
 static void OTA_HandlePacket(uint8_t cmd, const uint8_t *data, uint8_t len)
 {
     switch (cmd) {
     case CMD_OTA_START:
-        if(len < 8) break;
+        if (len < 12) { OTA_SendByte(nack); break; }
+        if (g_ota_backup_busy) { OTA_SendByte(nack); break; }   // 金固件备份中
+
         memcpy(&ota_fw_size, data, 4);
         memcpy(&ota_fw_crc32, data + 4, 4);
+        memcpy(&ota_fw_version, data + 8, 4);
 
-        // 大小必须合法：异常值会让下面的擦除循环越界擦掉其他分区
+        // 大小必须合法：异常值会让擦除循环越界擦掉其他分区
         if (ota_fw_size == 0 || ota_fw_size > OTA_FW_MAX_SIZE) {
             ota_fw_size = 0;
-            OTA_SendByte(0x15);     // NACK，让上位机立刻失败而不是等超时
+            OTA_SendByte(nack);
             break;
         }
         ota_bytes_written = 0;
-        ota_active = 1;
+        g_ota_session_active = 1;
 
-        // 预备 SPI Flash 空间：先清 OTA 标志区（丢弃上次残留的 PENDING），
-        // 再擦除固件暂存区实际用到的扇区
-        W25_EraseSector(OTA_FLAG_ADDR);
+        // 只擦槽 A 数据区实际用到的扇区。控制块/镜像头留给 END 一次性提交，
+        // 会话中途断电不会破坏现有升级状态（上次 TESTING/金固件信息完好）
         for (uint32_t addr = OTA_FW_ADDR;
             addr < OTA_FW_ADDR + ota_fw_size;
             addr += W25_SECTOR_SIZE){
                 W25_EraseSector(addr);
             }
 
-        // 回复ACK
         OTA_SendByte(ack);
         break;
-    case CMD_OTA_DATA:
-        // 没有会话、空包或超出容量都要 NACK，静默丢弃会让上位机等到超时
-        if (!ota_active || len == 0) {
-            OTA_SendByte(0x15);
+
+    case CMD_OTA_DATA: {
+        // v2 核心：按 SEQ 计算期望偏移，重传幂等
+        if (!g_ota_session_active || len == 0) {
+            OTA_SendByte(nack);
             break;
         }
-        if(ota_bytes_written + len > OTA_FW_MAX_SIZE) {
-            OTA_SendByte(0x15);
+        uint32_t expected_seq = ota_bytes_written / OTA_CHUNK_SIZE;
+
+        if (pkt_seq < expected_seq) {
+            // 已写过的包（上位机没收到 ACK 时的重传）：直接 ACK，不重复写
+            OTA_SendByte(ack);
+            break;
+        }
+        if (pkt_seq > expected_seq) {
+            // 乱序/跳包：数据流已断，要求上位机从中断处重发
+            OTA_SendByte(nack);
             break;
         }
 
-        W25_WritePage(OTA_FW_ADDR + ota_bytes_written, data, len);
+        uint32_t offset = (uint32_t)pkt_seq * OTA_CHUNK_SIZE;
+        if (offset + len > ota_fw_size) {   // 超出申报大小（含尾包超长）
+            OTA_SendByte(nack);
+            break;
+        }
+
+        W25_WritePage(OTA_FW_ADDR + offset, data, len);
 
         // 回读验证
         uint8_t verify_buf[PKT_DATA_MAX];
-        W25_Read(OTA_FW_ADDR + ota_bytes_written, verify_buf, len);
+        W25_Read(OTA_FW_ADDR + offset, verify_buf, len);
         if (memcmp(data, verify_buf, len) != 0) {
-            // 打印前 8 字节对比，给出错误
             char dbg[40];
             int n = snprintf(dbg, sizeof(dbg),
                 "W ERR@%lu: w=%02X%02X%02X r=%02X%02X%02X\r\n",
-                (unsigned long)ota_bytes_written,
+                (unsigned long)offset,
                 data[0], data[1], data[2],
                 verify_buf[0], verify_buf[1], verify_buf[2]);
             HAL_UART_Transmit(&huart1, (uint8_t *)dbg, (uint16_t)n, 100);
-            ota_active = 0;        // 数据已错位，会话作废，必须重新 START
-            OTA_SendByte(0x15);
+            g_ota_session_active = 0;    // 数据已错位，会话作废，必须重新 START
+            OTA_SendByte(nack);
             break;
         }
 
-        ota_bytes_written += len;
-
-        // 回复ACK
+        ota_bytes_written = offset + len;
         OTA_SendByte(ack);
         break;
-    case CMD_OTA_END:
-        do {
-            // 传输不完整（缺包/中途出错）不能进入校验流程
-            if (!ota_active || ota_bytes_written != ota_fw_size) {
-                OTA_SendByte(0x15);
-                break;
-            }
-            ota_active = 0;
+    }
 
-            // 回读固件，分段计算 CRC32
-            uint8_t read_buf[256];
-            uint32_t pos = 0;
-            uint32_t calc_crc = 0xFFFFFFFF;
-            while (pos < ota_fw_size) {
-                uint32_t chunk = (ota_fw_size - pos > 256) ? 256 : (ota_fw_size - pos);
-                W25_Read(OTA_FW_ADDR + pos, read_buf, chunk);
-                calc_crc = crc32_update(calc_crc, read_buf, chunk);  // 分段累加
-                pos += chunk;
-            }
-            calc_crc = ~calc_crc;   // 最终取反
-            if (calc_crc == ota_fw_crc32) {
-                OTA_Flag_t flag = {
-                .magic    = OTA_MAGIC,
-                .fw_size  = ota_fw_size,
-                .fw_crc32 = ota_fw_crc32,
-                .state    = OTA_STATE_PENDING,
-                };
+    case CMD_OTA_END: {
+        if (g_ota_backup_busy) { OTA_SendByte(nack); break; }
+        // 传输不完整（缺包/中途出错）不能进入校验流程
+        if (!g_ota_session_active || ota_bytes_written != ota_fw_size) {
+            g_ota_session_active = 0;
+            OTA_SendByte(nack);
+            break;
+        }
+        g_ota_session_active = 0;
 
-                W25_EraseSector(OTA_FLAG_ADDR);
-                W25_WritePage(OTA_FLAG_ADDR, (uint8_t *)&flag, sizeof(flag));
-                OTA_SendByte(ack);
-                #ifdef USE_FREERTOS
-                osDelay(100);
-                #endif
-                NVIC_SystemReset();
-            } else {
-                OTA_SendByte(0x15);
-            }
-        } while (0);
-    break;
+        // 回读固件，分段计算 CRC32
+        uint8_t read_buf[256];
+        uint32_t pos = 0;
+        uint32_t calc_crc = 0xFFFFFFFF;
+        while (pos < ota_fw_size) {
+            uint32_t chunk = (ota_fw_size - pos > 256) ? 256 : (ota_fw_size - pos);
+            W25_Read(OTA_FW_ADDR + pos, read_buf, chunk);
+            calc_crc = crc32_update(calc_crc, read_buf, chunk);  // 分段累加
+            pos += chunk;
+        }
+        calc_crc = ~calc_crc;   // 最终取反
+
+        if (calc_crc != ota_fw_crc32) {
+            OTA_SendByte(nack);
+            break;
+        }
+
+        // 校验通过：写槽 A 镜像头 + 控制块置 PENDING（保留 golden_valid）
+        OTA_ImageHdr_t hdr = {
+            .magic   = OTA_IMG_MAGIC,
+            .version = ota_fw_version,
+            .size    = ota_fw_size,
+            .crc32   = ota_fw_crc32,
+        };
+        W25_EraseSector(OTA_HDR_A_ADDR);
+        W25_WritePage(OTA_HDR_A_ADDR, (const uint8_t *)&hdr, sizeof(hdr));
+
+        OTA_Flag_t flag;
+        W25_Read(OTA_FLAG_ADDR, (uint8_t *)&flag, sizeof(flag));
+        if (flag.magic != OTA_FLAG_MAGIC || flag.ver != OTA_FLAG_VER) {
+            memset(&flag, 0, sizeof(flag));
+            flag.magic = OTA_FLAG_MAGIC;
+            flag.ver   = OTA_FLAG_VER;
+        }
+        flag.state     = OTA_STATE_PENDING;
+        flag.retry_cnt = 0;
+        W25_EraseSector(OTA_FLAG_ADDR);
+        W25_WritePage(OTA_FLAG_ADDR, (const uint8_t *)&flag, sizeof(flag));
+
+        OTA_SendByte(ack);
+        #ifdef USE_FREERTOS
+        osDelay(100);
+        #endif
+        NVIC_SystemReset();     // 进入 Bootloader 搬运
+    } break;
+
+    case CMD_QUERY: {
+        OTA_QueryResp_t resp;
+        resp.proto      = 2;
+        resp.state      = g_ota_flag_cache.state;
+        resp.golden     = g_ota_flag_cache.golden_valid;
+        resp.retry      = (uint8_t)g_ota_flag_cache.retry_cnt;
+        resp.version    = APP_VERSION;
+        resp.uptime_sec = HAL_GetTick() / 1000u;
+        OTA_SendPacket(CMD_QUERY, (const uint8_t *)&resp, sizeof(resp));
+    } break;
     }
 }
-
 
 // 从环形缓冲区读取并解析
 void OTA_Process(void)

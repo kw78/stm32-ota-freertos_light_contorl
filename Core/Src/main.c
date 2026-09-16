@@ -33,6 +33,7 @@
 #include "MPU6050.h"
 #include "w25d64.h"
 #include "ota.h"
+#include "supervisor.h"
 #include <string.h>
 #include <stdio.h>
 /* USER CODE END Includes */
@@ -201,6 +202,10 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
   */
 int main(void)
 {
+  /* 第一行就武装看门狗（长超时 ~26s）：main 之前（SystemInit/数据段搬运）之外的
+   * 整个启动过程都在保护圈内，跑挂最多一次 IWDG 复位，不会无限僵死。
+   * IWDG 一旦启动只能复位停止，supervisor 运行后收紧到 8s 并按健康喂狗 */
+  Supervisor_IWDGEarlyArm();
 
   /* USER CODE BEGIN 1 */
 
@@ -298,12 +303,12 @@ int main(void)
   MX_USART1_UART_Init();
   MX_TIM3_Init();
 
-  // 调试信息：SPI Flash ID + OTA 标志（必须在 MX_USART1_UART_Init 之后发送，
-  // 之前 huart1 未初始化，HAL_UART_Transmit 会直接返回 HAL_BUSY，什么都发不出去）
+  // 调试信息：SPI Flash ID + OTA 标志 + 固件版本（UART 初始化之后才发得出去）
   {
     char id_buf[60];
     int id_n = snprintf(id_buf, sizeof(id_buf),
-        "ID:%06lX FLAG:%02X%02X%02X%02X\r\n",
+        "APP v2 %08lX %s | ID:%06lX FLAG:%02X%02X%02X%02X\r\n",
+        (unsigned long)APP_VERSION, __DATE__,
         spi_id, flag[0], flag[1], flag[2], flag[3]);
     HAL_UART_Transmit(&huart1, (uint8_t *)id_buf, (uint16_t)id_n, 100);
   }
@@ -323,6 +328,25 @@ int main(void)
   /* Init scheduler */
   osKernelInitialize();  /* Call init function for freertos objects (in cmsis_os2.c) */
   MX_FREERTOS_Init();
+
+  /* Supervisor：IWDG 喂狗 + OTA 确认启动。优先级介于 Task_UART(High) 与
+   * Task_SPIFlash/LED(Low) 之间——金固件备份期间靠 g_ota_backup_busy 挡住
+   * 新的 OTA 会话（Task_UART 可抢占 supervisor，看到 busy 即 NACK，无双向竞争）。
+   * 栈：最深路径 golden_backup 的 buf[256]+HAL/SPI 调用帧 ≈500B，768B 留余量；
+   * FreeRTOS 堆仅 8KB（6 任务+定时器任务+队列已占 ~7KB），不能再大 */
+  {
+    static osThreadAttr_t sup_attr = {
+      .name = "Task_Supervisor",
+      .stack_size = 768,
+      .priority = (osPriority_t) osPriorityBelowNormal5,
+    };
+    if (osThreadNew(StartTaskSupervisor, NULL, &sup_attr) == NULL) {
+      /* 堆耗尽等极端情况：supervisor 起不来 = 没人喂狗，26s 后看门狗复位。
+       * 显式报错让现场一眼定位，而不是表现为"设备周期性重启" */
+      char err[] = "FATAL: supervisor task create failed\r\n";
+      HAL_UART_Transmit(&huart1, (uint8_t *)err, sizeof(err) - 1, 100);
+    }
+  }
 
   /* Start ADC DMA after FreeRTOS init (semaphores must exist before ISR fires) */
   HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc_buf, ADC_BUF_SIZE);

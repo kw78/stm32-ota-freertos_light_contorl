@@ -64,7 +64,8 @@
 #define configTICK_RATE_HZ                       ((TickType_t)1000)
 #define configMAX_PRIORITIES                     ( 56 )
 #define configMINIMAL_STACK_SIZE                 ((uint16_t)128)
-#define configTOTAL_HEAP_SIZE                    ((size_t)8192)
+/* 8→9KB：原 8KB 已被 6 任务+定时器任务+队列占 ~7.5KB，supervisor 任务放不下 */
+#define configTOTAL_HEAP_SIZE                    ((size_t)9216)
 #define configMAX_TASK_NAME_LEN                  ( 16 )
 #define configUSE_TRACE_FACILITY                 1
 #define configUSE_16_BIT_TICKS                   0

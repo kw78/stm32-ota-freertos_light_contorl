@@ -151,8 +151,7 @@ static void __attribute__((naked)) jump_to_app(void){
 // debug得出
 
 // 搬运固件，带回读校验，返回 0=成功, -1=写入失败, -2=回读校验失败, -3=擦除失败
-static int copy_firmware(uint32_t src_addr, uint32_t dst_addr, uint32_t size){
-    uint8_t buf[256];
+static int copy_firmware(uint32_t src_addr, uint32_t dst_addr, uint32_t size){    uint8_t buf[256];
     uint8_t readback[256];
     HAL_FLASH_Unlock();
 
@@ -193,8 +192,56 @@ static int copy_firmware(uint32_t src_addr, uint32_t dst_addr, uint32_t size){
     return 0;
 }
 
+// ---- OTA v2：控制块与槽位操作 ----
+
+static void flag_read(OTA_Flag_t *f)
+{
+    W25_Read(OTA_FLAG_ADDR, (uint8_t *)f, sizeof(*f));
+}
+
+static void flag_write(const OTA_Flag_t *f)
+{
+    W25_EraseSector(OTA_FLAG_ADDR);
+    W25_WritePage(OTA_FLAG_ADDR, (const uint8_t *)f, sizeof(*f));
+}
+
+// 校验一个槽位：镜像头合法 + 固件 CRC32 匹配 + 栈顶在 RAM 范围内。
+// 返回 1 可用；size_out 可为 NULL
+static int slot_verify(uint32_t hdr_addr, uint32_t data_addr, uint32_t *size_out)
+{
+    OTA_ImageHdr_t hdr;
+    W25_Read(hdr_addr, (uint8_t *)&hdr, sizeof(hdr));
+    if (hdr.magic != OTA_IMG_MAGIC || hdr.size == 0 || hdr.size > OTA_FW_MAX_SIZE)
+        return 0;
+
+    uint8_t buf[256];
+    uint32_t pos = 0;
+    uint32_t crc = 0xFFFFFFFF;
+    while (pos < hdr.size) {
+        uint32_t chunk = (hdr.size - pos > 256) ? 256 : (hdr.size - pos);
+        W25_Read(data_addr + pos, buf, chunk);
+        crc = crc32_update(crc, buf, chunk);
+        pos += chunk;
+    }
+    if ((~crc) != hdr.crc32)
+        return 0;
+
+    // 合法性检查：栈顶地址必须在 RAM 范围内
+    uint32_t app_sp;
+    W25_Read(data_addr, (uint8_t *)&app_sp, 4);
+    if (app_sp < 0x20000000 || app_sp > 0x20005000)
+        return 0;
+
+    if (size_out) *size_out = hdr.size;
+    return 1;
+}
+
 int main(void)
 {
+    // 第一件事读复位原因：IWDG 复位是"候选固件跑挂"的证据，用于回滚计数。
+    // 用户按 NRST / 断电重启不算固件的错，不计入。
+    uint8_t reset_by_iwdg = ((RCC->CSR & RCC_CSR_IWDGRSTF) != 0) ? 1 : 0;
+
     HAL_Init();
     SystemClock_Config();
     my_MX_GPIO_Init();
@@ -209,52 +256,60 @@ int main(void)
         while(1) {}
     }
 
-    // 读 OTA 标志
     OTA_Flag_t flag;
-    W25_Read(OTA_FLAG_ADDR, (uint8_t *)&flag, sizeof(flag));
+    flag_read(&flag);
+    uint8_t flag_dirty = 0;
+    uint32_t size = 0;
 
-    // 检查是否需要更新
-    if (flag.magic == OTA_MAGIC && flag.state == OTA_STATE_PENDING
-        && flag.fw_size <= OTA_FW_MAX_SIZE)
-    {
-        // 先校验 SPI Flash 中固件的 CRC32（不拷贝）
-        uint8_t crc_buf[256];
-        uint32_t crc_pos = 0;
-        uint32_t calc_crc = 0xFFFFFFFF;
-        while (crc_pos < flag.fw_size) {
-            uint32_t chunk = (flag.fw_size - crc_pos > 256) ? 256 : (flag.fw_size - crc_pos);
-            W25_Read(OTA_FW_ADDR + crc_pos, crc_buf, chunk);
-            calc_crc = crc32_update(calc_crc, crc_buf, chunk);
-            crc_pos += chunk;
-        }
-        calc_crc = ~calc_crc;
-
-        // 合法性检查：栈顶地址必须在 RAM 范围内
-        uint32_t app_sp;
-        W25_Read(OTA_FW_ADDR, (uint8_t *)&app_sp, 4);
-        int sp_valid = (app_sp >= 0x20000000 && app_sp <= 0x20005000);
-
-        if (calc_crc == flag.fw_crc32 && sp_valid)
-        {
-            // CRC 匹配且固件合法
-            int copy_ret = copy_firmware(OTA_FW_ADDR, APP_START_ADDR, flag.fw_size);
-            if (copy_ret == 0) {
-                // 搬运成功且校验通过
+    // 只认 v2 契约的标志（v1 旧标志或杂数据一律视为无升级活动，直接跳 App；
+    // 旧标志由 App 侧 supervisor 完成一次性迁移）
+    if (flag.magic == OTA_FLAG_MAGIC && flag.ver == OTA_FLAG_VER) {
+        if (flag.state == OTA_STATE_PENDING) {
+            if (slot_verify(OTA_HDR_A_ADDR, OTA_FW_ADDR, &size)) {
+                // 暂存镜像有效：搬运到内部 Flash，进入 TESTING 等 App 确认
+                if (copy_firmware(OTA_FW_ADDR, APP_START_ADDR, size) == 0) {
+                    flag.state = OTA_STATE_TESTING;
+                    flag.retry_cnt = 0;
+                } else if (flag.golden_valid &&
+                           slot_verify(OTA_HDR_B_ADDR, OTA_GOLDEN_ADDR, &size)) {
+                    // 搬运失败（内部 Flash 写入异常）：退回金固件
+                    copy_firmware(OTA_GOLDEN_ADDR, APP_START_ADDR, size);
+                    flag.state = OTA_STATE_IDLE;
+                    flag.retry_cnt = 0;
+                } else {
+                    // 搬运失败且无金固件：维持现状（当前 App 可能仍完整）
+                    flag.state = OTA_STATE_IDLE;
+                    flag.retry_cnt = 0;
+                }
+                flag_dirty = 1;
+            } else {
+                // 暂存镜像损坏：不动内部 Flash，当前 App 原样运行；
+                // 有金固件则顺带回滚，让设备回到已知良好状态
+                if (flag.golden_valid &&
+                    slot_verify(OTA_HDR_B_ADDR, OTA_GOLDEN_ADDR, &size)) {
+                    copy_firmware(OTA_GOLDEN_ADDR, APP_START_ADDR, size);
+                }
                 flag.state = OTA_STATE_IDLE;
-                W25_EraseSector(OTA_FLAG_ADDR);
-                W25_WritePage(OTA_FLAG_ADDR, (uint8_t *)&flag, sizeof(flag));
-                // 重写flag
+                flag.retry_cnt = 0;
+                flag_dirty = 1;
             }
-            // copy_ret != 0 时保留 PENDING 标志，下次复位重试
+        } else if (flag.state == OTA_STATE_TESTING && reset_by_iwdg) {
+            // 候选固件看门狗复位：计数，超限回滚
+            if (flag.retry_cnt < 0xFFFF) flag.retry_cnt++;
+            if (flag.retry_cnt > OTA_ROLLBACK_LIMIT && flag.golden_valid &&
+                slot_verify(OTA_HDR_B_ADDR, OTA_GOLDEN_ADDR, &size)) {
+                copy_firmware(OTA_GOLDEN_ADDR, APP_START_ADDR, size);
+                flag.state = OTA_STATE_IDLE;
+                flag.retry_cnt = 0;
+            }
+            flag_dirty = 1;
         }
-        else
-        {
-            // CRC 不匹配或固件非法
-            flag.state = OTA_STATE_IDLE;
-            W25_EraseSector(OTA_FLAG_ADDR);
-            W25_WritePage(OTA_FLAG_ADDR, (uint8_t *)&flag, sizeof(flag));
-        }
+
+        if (flag_dirty) flag_write(&flag);
     }
+
+    // 清除复位原因标志，保证下次开机读到的是"那一次"的原因
+    __HAL_RCC_CLEAR_RESET_FLAGS();
 
     SysTick->CTRL = 0;   // 关闭 Bootloader 的 SysTick，避免跳转后误触发
     jump_to_app();

@@ -163,33 +163,67 @@ W25D64 驱动从零实现：CS 控制 → 命令发送 → 地址处理 → 数�
 
 ---
 
-## OTA 协议
+## OTA 协议（v2）
 
 ```text
-包格式: | 0xAA | CMD | LEN | DATA(0-64B) | CRC16 |
+帧格式: | 0xAA | CMD | LEN | SEQ_L | SEQ_H | DATA(0-64B) | CRC16 |
+         CRC16 覆盖 CMD+LEN+SEQ+DATA（与固件端逐字节一致，已跨端验证）
 
-CMD_OTA_START (0x01): 固件大小(4B) + CRC32(4B) → 设备擦除 SPI Flash
-CMD_OTA_DATA  (0x02): 固件数据(≤64B)          → 设备写入 SPI Flash
-CMD_OTA_END   (0x03): 无数据                   → 设备校验 + 设置标志 + 复位
+CMD_OTA_START (0x01): 大小(4B) + CRC32(4B) + 版本(4B) → 擦槽 A 扇区
+CMD_OTA_DATA  (0x02): 固件数据(≤64B)，SEQ = 偏移/64   → 写入 + 回读验证
+CMD_OTA_END   (0x03): 无数据 → 整体 CRC32 → 写镜像头 + 置 PENDING → 复位
+CMD_QUERY     (0x10): 无数据 → 回 12B 状态（协议/状态/金固件/版本/uptime）
 ```
 
-**双重校验：**
+**v2 核心改进：**
 
-- CRC16（每包）：保证 UART 传输无损
-- CRC32（整体）：保证 SPI Flash 存储正确
+- **SEQ 幂等重传**：ACK 丢失后主机重发同 SEQ，设备识别已写直接 ACK，不再重复写导致数据错位（v1 的协议级缺陷）
+- **上位机自动协商**：`ota_tool.py` 先 QUERY 探测，老固件无响应自动降级 v1——从 v1 设备直接升级到 v2 一条命令完成
+- **双重校验**：CRC16（每包）+ CRC32（整体）+ 每包 SPI Flash 回读验证
+
+---
+
+## OTA v2 升级体系：确认启动 + 自动回滚
+
+W25D64 分区（Bootloader 契约，定稿后保持 ABI 稳定）：
+
+```text
+0x000000  4KB   控制块 flag（magic'OTA2'/ver/state/golden_valid/retry_cnt）
+0x001000  4KB   槽 A 镜像头（magic/version/size/crc32）
+0x002000  56KB  槽 A 固件暂存区
+0x010000  4KB   槽 B 镜像头
+0x011000  56KB  槽 B 金固件（回滚源）
+0x020000  16KB  黑匣子/配置区（预留）
+```
+
+两阶段提交状态机（MCUboot 风格，适配 64KB 单 App 槽的硬件现实）：
+
+```text
+IDLE ──OTA END──▶ PENDING ──Bootloader 校验+搬运──▶ TESTING ──健康 10s──▶ IDLE
+                                                    │ App 自检通过后备份金固件
+                                                    │
+                                       连续 4 次 IWDG 复位
+                                                    ▼
+                                              自动回滚槽 B
+```
+
+- **失败自愈**：新固件启动即崩 → IWDG 复位计数 → 超限自动回滚金固件，设备永不变砖
+- **只算固件的错**：用户按 NRST / 断电重启不计入回滚计数（Bootloader 读 RCC 复位原因区分）
+- **IWDG 从 main 第一行武装**（26s 长窗口），supervisor 运行后收紧到 8s，健康检查通过才喂狗
+- **首次升级无回滚保护**（金固件尚未建立），确认成功后即具备
 
 ---
 
 ## Bootloader 流程
 
 ```text
-上电 → SPI Flash ID 预检（失败直接跳 App）
-  → 读 OTA 标志
-  → CRC32 校验固件
-  → SP 合法性检查（0x20000000~0x20005000）
-  → 搬运固件（带回读校验）
-  → 清除标志
-  → naked ASM 跳转（设置 MSP + VTOR + bx）
+上电 → 读复位原因（IWDG 复位 = 候选固件跑挂的证据）
+  → SPI Flash ID 预检（失败直接跳 App）
+  → 读 v2 控制块（magic/ver 不符一律跳 App，v1 旧标志由 App 侧迁移）
+  → PENDING: 校验槽 A（镜像头+CRC32+SP 范围）→ 按页擦除 + 搬运（带回读）→ TESTING
+     搬运失败/镜像损坏 → 有金固件则回滚 → IDLE
+  → TESTING + IWDG 复位: retry_cnt++，超限回滚金固件
+  → 清复位标志 → naked ASM 跳转（MSP + VTOR + bx）
 ```
 
 ---
@@ -198,9 +232,9 @@ CMD_OTA_END   (0x03): 无数据                   → 设备校验 + 设置标�
 
 | 区域 | 大小 | 已用 | 占比 |
 |------|------|------|------|
-| Flash (App) | 54KB | 37.6KB | 69.6% |
-| Flash (Bootloader) | 8KB | 6.9KB | 85.6% |
-| RAM | 20KB | 15KB | 75.2% |
+| Flash (App) | 54KB | 39KB | 72.2% |
+| Flash (Bootloader) | 8KB | 7.2KB | 89.6% |
+| RAM | 20KB | 15.1KB | 75.5% |
 
 ---
 
@@ -221,9 +255,20 @@ openocd -f interface/stlink.cfg -f target/stm32f1x.cfg \
   -c "flash write_image /tmp/app.bin 0x08002000 bin" \
   -c "reset run; shutdown"
 
-# OTA 上传
-sudo python3 tools/ota_upload.py /dev/ttyUSB0 build/Debug/gcctest.bin 115200
+# OTA 上传（v2 设备；对 v1 老固件自动降级协商，一条命令完成换代）
+sudo python3 tools/ota_tool.py upload /dev/ttyUSB0 build/Debug/gcctest.bin 115200
+
+# 查询设备状态（版本/升级状态/金固件/回滚计数/uptime）
+sudo python3 tools/ota_tool.py query /dev/ttyUSB0
 ```
+
+**v2 首次部署注意：** 新分区表与 v1 bootloader 不兼容——从 v1 设备升级到 v2 时，
+先跑上面的 `upload`（此时还是 v1 协议，安装的是 v2 App），随后**用 flash.sh 重烧一次
+bootloader+App** 激活确认启动/回滚能力（Bootloader 无法通过 OTA 自我更新）。
+之后所有升级纯 OTA，不再需要烧录器。
+
+CI（GitHub Actions，master/fix/**/feat** 分支）：自动构建双镜像 + 尺寸闸门
+（bootloader ≤ 8KB、app ≤ 54KB）+ 生成 manifest.json（git 版本/大小/CRC32/SHA256）。
 
 ---
 
