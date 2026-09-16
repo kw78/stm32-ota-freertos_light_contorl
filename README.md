@@ -300,7 +300,19 @@ sudo python3 tools/ota_tool.py upload /dev/ttyUSB0 build/Debug/gcctest.bin 11520
 
 # 查询设备状态（版本/升级状态/金固件/回滚计数/uptime）
 sudo python3 tools/ota_tool.py query /dev/ttyUSB0
+
+# 导出黑匣子 / 统计记录；调光开关
+sudo python3 tools/ota_tool.py log /dev/ttyUSB0 --kind blackbox
+sudo python3 tools/ota_tool.py dim /dev/ttyUSB0 on --target 1100
 ```
+
+## 路线图
+
+- [x] **P1** OTA v2：分区契约 + 确认启动/回滚 + 协议 v2（SEQ 幂等）+ IWDG
+- [x] **P2** 可靠性：黑匣子 + HardFault 现场捕获 + 统计持久化 + 健康探针
+- [x] **P3** 光照闭环调光（PA7 硬件 PWM，零新增硬件）
+- [ ] **P4** ESP-01 WiFi 传输通道（真·远程升级）——待硬件到位；
+      传输层抽象已就位（协议解析与传输解耦，新增通道只需喂包给 OTA 核心状态机）
 
 **v2 首次部署注意：** 新分区表与 v1 bootloader 不兼容——从 v1 设备升级到 v2 时，
 先跑上面的 `upload`（此时还是 v1 协议，安装的是 v2 App），随后**用 flash.sh 重烧一次
