@@ -50,6 +50,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/w25d64.c
     Core/Src/ota.c
     Core/Src/supervisor.c
+    Core/Src/blackbox.c
 )
 
 # 固件版本注入：git short hash（构建时生成，QUERY / 串口 banner 可读）

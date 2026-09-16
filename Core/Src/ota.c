@@ -1,5 +1,6 @@
 #include "ota.h"
 #include "w25d64.h"
+#include "blackbox.h"
 #ifdef USE_FREERTOS
 #include "cmsis_os.h"
 #endif
@@ -357,6 +358,23 @@ static void OTA_HandlePacket(uint8_t cmd, const uint8_t *data, uint8_t len)
         resp.version    = APP_VERSION;
         resp.uptime_sec = HAL_GetTick() / 1000u;
         OTA_SendPacket(CMD_QUERY, (const uint8_t *)&resp, sizeof(resp));
+    } break;
+
+    case CMD_GET_LOG: {
+        /* 请求: which(1B, 1=黑匣子 2=统计) + idx(2B LE)；响应: 32B 记录 / 空=该槽无效 */
+        if (g_ota_backup_busy) { OTA_SendByte(nack); break; }
+        if (len < 3) { OTA_SendByte(nack); break; }
+        uint8_t  which = data[0];
+        uint16_t idx   = (uint16_t)(data[1] | ((uint16_t)data[2] << 8));
+        LogRec_t rec;
+        if (which != LOG_BLACKBOX && which != LOG_STATS) {
+            OTA_SendByte(nack);
+            break;
+        }
+        if (Log_Read(which, idx, &rec))
+            OTA_SendPacket(CMD_GET_LOG, (const uint8_t *)&rec, sizeof(rec));
+        else
+            OTA_SendPacket(CMD_GET_LOG, (const uint8_t *)"", 0);
     } break;
     }
 }

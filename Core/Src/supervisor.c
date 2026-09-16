@@ -1,4 +1,5 @@
 #include "supervisor.h"
+#include "blackbox.h"
 #include "w25d64.h"
 #include "cmsis_os.h"
 #include "main.h"
@@ -12,6 +13,11 @@ OTA_Flag_t g_ota_flag_cache;
 
 extern UART_HandleTypeDef huart1;
 extern volatile uint32_t seconds_today;     /* main.c：TIM3 1Hz 统计计数，健康探针 */
+extern volatile uint32_t today_dark_sec;    /* main.c：光照统计（黑匣子快照用） */
+extern volatile uint32_t today_dim_sec;
+extern volatile uint32_t today_ideal_sec;
+extern volatile uint32_t today_glare_sec;
+extern volatile uint32_t oled_heartbeat;    /* oled.c：Task_OLED 活性探针 */
 
 /* ---- IWDG：直接寄存器操作（工程未启用 HAL IWDG 驱动，寄存器本身就几个） ----
  * LSI 30~60kHz（典型 40kHz），预分频 /256：
@@ -49,6 +55,9 @@ void Supervisor_IWDGFeed(void)
 #define SUPERVISOR_PERIOD_MS   2000
 #define CONFIRM_DELAY_MS       10000
 #define SUPERVISOR_STACK_SIZE  (512 * 4)
+#define STATS_INTERVAL_MS      (30u * 60u * 1000u)   /* 统计快照周期 */
+#define OLED_STALE_MS          10000                 /* OLED 心跳失效阈值 */
+#define OLED_GRACE_MS          15000                 /* 开机宽限（首次刷屏前不判死） */
 
 static void log_line(const char *s)
 {
@@ -58,6 +67,7 @@ static void log_line(const char *s)
 /* 健康判定：
  *   a) HAL tick 在走 → TIM4（HAL 时基）中断活着
  *   b) seconds_today 在涨 → TIM3 统计中断 + 主循环状态机路径活着
+ *   c) oled_heartbeat 在涨 → Task_OLED 及其 I2C/OLED 链路活着（开机宽限期后）
  *   （本任务能被调度本身就证明 FreeRTOS 内核活着）
  * 任何一项不动 → 返回 0，本轮不喂狗
  */
@@ -65,15 +75,19 @@ static int health_check(void)
 {
     static uint32_t last_tick = 0;
     static uint32_t last_sec = 0;
+    static uint32_t last_oled_hb = 0;
     uint32_t now = HAL_GetTick();
     uint32_t sec = seconds_today;
+    uint32_t hb = oled_heartbeat;
     int ok = 1;
 
     if (now - last_tick < SUPERVISOR_PERIOD_MS / 2) ok = 0;   /* tick 停了 */
     if (sec == last_sec) ok = 0;                              /* 秒计数停了 */
+    if (now > OLED_GRACE_MS && hb == last_oled_hb) ok = 0;    /* OLED 卡死 */
 
     last_tick = now;
     last_sec = sec;
+    last_oled_hb = hb;
     return ok;
 }
 
@@ -160,14 +174,58 @@ static int golden_backup(void)
     return 0;
 }
 
+/* 开机黑匣子流程：记录本次复位原因 + 转录上次崩溃现场 + 清复位标志 */
+static void blackbox_boot_log(void)
+{
+    /* 先取证据，再做任何 SPI 操作（bootloader 不清 CSR，原因只有这里读得到） */
+    uint32_t reset_csr = RCC->CSR;
+    int have_crash = (g_crash_mailbox.magic == CRASH_MAGIC);
+    CrashMailbox_t crash;
+    if (have_crash)
+        memcpy(&crash, &g_crash_mailbox, sizeof(crash));
+
+    g_ota_backup_busy = 1;          /* SPI 长操作期间挡住 OTA/日志查询 */
+    Supervisor_IWDGFeed();
+    Log_Init();
+    Supervisor_IWDGFeed();
+
+    /* 开机记录：版本 / 复位原因 / 升级状态 */
+    uint32_t f[6] = {0};
+    f[0] = APP_VERSION;
+    f[1] = reset_csr;
+    f[2] = ((uint32_t)g_ota_flag_cache.state << 24)
+         | ((uint32_t)g_ota_flag_cache.golden_valid << 16)
+         | g_ota_flag_cache.retry_cnt;
+    Log_Write(LOG_BLACKBOX, REC_BOOT, f);
+
+    /* 崩溃现场转录（转录成功才清邮箱，失败保留到下次开机重试） */
+    if (have_crash) {
+        f[0] = crash.cfsr;
+        f[1] = crash.hfsr;
+        f[2] = crash.bfar;
+        f[3] = crash.pc;
+        f[4] = crash.lr;
+        f[5] = crash.uptime;
+        if (Log_Write(LOG_BLACKBOX, REC_FAULT, f) == 0)
+            g_crash_mailbox.magic = 0;
+    }
+    Supervisor_IWDGFeed();
+    g_ota_backup_busy = 0;
+
+    /* 证据入柜后清复位标志，保证下次读到的是新一次复位的原因 */
+    __HAL_RCC_CLEAR_RESET_FLAGS();
+}
+
 void StartTaskSupervisor(void *argument)
 {
     (void)argument;
 
     flag_boot_init();
+    blackbox_boot_log();
 
     uint32_t healthy_since = 0;          /* 0 = 尚未开始连续健康计时 */
     uint8_t  confirmed = 0;              /* 本次开机只确认一次 */
+    uint32_t last_stats_tick = HAL_GetTick();
 
     /* 运行期收紧看门狗：从 26s 早期窗口收紧到 8s（LSI 典型值） */
     iwdg_reload_config(IWDG_RLR_RUN);
@@ -182,6 +240,20 @@ void StartTaskSupervisor(void *argument)
                 healthy_since = HAL_GetTick();
         } else {
             healthy_since = 0;           /* 失守，健康计时清零重新来 */
+        }
+
+        /* 光照统计快照：断电最多丢最后一个周期 */
+        if (HAL_GetTick() - last_stats_tick >= STATS_INTERVAL_MS) {
+            last_stats_tick = HAL_GetTick();
+            g_ota_backup_busy = 1;
+            uint32_t f[6] = {
+                HAL_GetTick() / 1000u,
+                today_dark_sec, today_dim_sec, today_ideal_sec, today_glare_sec,
+                APP_VERSION,
+            };
+            Log_Write(LOG_STATS, REC_STATS, f);
+            g_ota_backup_busy = 0;
+            Supervisor_IWDGFeed();
         }
 
         /* TESTING 固件健康跑满观察期 → 确认启动（两阶段提交的第二阶段） */

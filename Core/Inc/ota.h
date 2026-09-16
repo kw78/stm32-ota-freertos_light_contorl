@@ -74,6 +74,7 @@ typedef struct {
 #define CMD_OTA_DATA        0x02        /* DATA: ≤64B 固件数据，SEQ = 偏移/64 */
 #define CMD_OTA_END         0x03        /* DATA: 无 */
 #define CMD_QUERY           0x10        /* DATA: 无；响应 12B 状态（见下） */
+#define CMD_GET_LOG         0x12        /* DATA: which(1B)+idx(2B)；响应 32B 记录或空(结束) */
 #define OTA_CHUNK_SIZE      64
 
 /* QUERY 响应（12B, 小端） */

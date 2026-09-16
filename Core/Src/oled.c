@@ -4,6 +4,9 @@
 /* 告诉编译器：hi2c1 在别的文件里定义了，你去找找 */
 extern I2C_HandleTypeDef hi2c1;
 
+/* Task_OLED 活性探针：每次刷屏 +1，supervisor 健康检查用（卡死则停止喂狗） */
+volatile uint32_t oled_heartbeat = 0;
+
 // SSD1306 的 I2C 地址
 #define OLED_ADDR 0x78
 
@@ -171,6 +174,7 @@ void OLED_Init(void)
 void OLED_ShowString(uint8_t x, uint8_t y, const char *str)
 {
     uint8_t c;
+    oled_heartbeat++;
     x = x * 6; // 将字符列位置转换为像素位置 (每个字符占6像素)
     while (*str)
     {

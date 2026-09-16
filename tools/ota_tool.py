@@ -33,6 +33,11 @@ CMD_OTA_START = 0x01
 CMD_OTA_DATA  = 0x02
 CMD_OTA_END   = 0x03
 CMD_QUERY     = 0x10
+CMD_GET_LOG   = 0x12
+
+LOG_BLACKBOX  = 1
+LOG_STATS     = 2
+REC_NAMES     = {1: 'BOOT', 2: 'FAULT', 3: 'STATS'}
 
 ACK  = 0x06
 NACK = 0x15
@@ -165,6 +170,80 @@ def cmd_query(args) -> int:
     return 0
 
 
+RESET_CAUSE_NAMES = [
+    (1 << 31, 'LPWR'), (1 << 30, 'WWDG'), (1 << 29, 'IWDG'), (1 << 28, 'SFT'),
+    (1 << 27, 'POR'),  (1 << 26, 'PIN'),  (1 << 25, 'OBR'),  (1 << 24, 'FWR'),
+]
+
+
+def decode_csr(csr: int) -> str:
+    names = [n for bit, n in RESET_CAUSE_NAMES if csr & bit]
+    return '|'.join(names) if names else 'NONE'
+
+
+def crc16_update(crc: int, data: bytes) -> int:
+    """Modbus CRC16 增量续算（跨段覆盖用）"""
+    for b in data:
+        crc ^= b
+        for _ in range(8):
+            crc = (crc >> 1) ^ 0xA001 if crc & 1 else crc >> 1
+    return crc
+
+
+def record_crc16(rec: bytes) -> int:
+    """与固件一致：覆盖 kind+seq（rec[2:6]）和 f[6]（rec[8:32]）两段，crc 字段不参与"""
+    return crc16_update(crc16_update(0xFFFF, rec[2:6]), rec[8:32])
+
+
+def decode_record(rec: bytes) -> str:
+    """32B LogRec_t: magic(2) kind(2) seq(2) crc16(2) f[6](24)"""
+    magic, kind, seq = struct.unpack('<HHH', rec[:6])
+    f = struct.unpack('<6I', rec[8:32])
+    if magic != 0xBB01:
+        return f'  <槽位无效 magic={magic:04X}>'
+    if kind == 1:      # REC_BOOT: ver, csr, state<<24|golden<<16|retry
+        state = f[2] >> 24
+        golden = (f[2] >> 16) & 0xFF
+        st = {0: 'IDLE', 1: 'PENDING', 2: 'TESTING'}.get(state, hex(state))
+        return (f'  BOOT  seq={seq:5d} v{f[0]:08X} 复位原因={decode_csr(f[1])} '
+                f'状态={st} 金固件={golden} retry={f[2] & 0xFFFF}')
+    if kind == 2:      # REC_FAULT: cfsr, hfsr, bfar, pc, lr, uptime
+        return (f'  FAULT seq={seq:5d} CFSR={f[0]:08X} HFSR={f[1]:08X} BFAR={f[2]:08X} '
+                f'PC={f[3]:08X} LR={f[4]:08X} 崩溃于 {f[5]}ms')
+    if kind == 3:      # REC_STATS: uptime, dark, dim, ideal, glare, ver
+        return (f'  STATS seq={seq:5d} uptime={f[0]}s dark={f[1]} dim={f[2]} '
+                f'ideal={f[3]} glare={f[4]} v{f[5]:08X}')
+    return f'  ???   seq={seq:5d} kind={kind} f={f}'
+
+
+def cmd_log(args) -> int:
+    if serial is None:
+        print("错误: 缺少 pyserial（pip install pyserial）")
+        return 1
+    which = LOG_BLACKBOX if args.kind == 'blackbox' else LOG_STATS
+    cap = 128 if which == LOG_BLACKBOX else 384
+    ser = serial.Serial(args.port, args.baud, timeout=1)
+    time.sleep(0.1)
+    ser.reset_input_buffer()
+
+    print(f"{'黑匣子' if which == LOG_BLACKBOX else '统计快照'}记录（扫描 {cap} 槽）:")
+    count = 0
+    for idx in range(cap):
+        ser.write(make_packet_v2(CMD_GET_LOG, struct.pack('<BH', which, idx)))
+        rec = read_packet_v2(ser, CMD_GET_LOG, timeout=2.0)
+        if rec is None:
+            print("  设备无响应（超时或设备忙，稍后重试）")
+            break
+        if len(rec) == 0:
+            continue                      # 无效槽位
+        print(decode_record(rec))
+        count += 1
+        time.sleep(0.005)                 # 给设备喘息，避免压满环形缓冲
+    print(f"共 {count} 条有效记录")
+    ser.close()
+    return 0
+
+
 def cmd_upload(args) -> int:
     if serial is None:
         print("错误: 缺少 pyserial（pip install pyserial）")
@@ -252,6 +331,12 @@ def main():
     p_q.add_argument('port', help='串口')
     p_q.add_argument('baud', nargs='?', type=int, default=115200)
     p_q.set_defaults(func=cmd_query)
+
+    p_l = sub.add_parser('log', help='导出黑匣子/统计记录')
+    p_l.add_argument('port', help='串口')
+    p_l.add_argument('baud', nargs='?', type=int, default=115200)
+    p_l.add_argument('--kind', choices=['blackbox', 'stats'], default='blackbox')
+    p_l.set_defaults(func=cmd_log)
 
     args = parser.parse_args()
     sys.exit(args.func(args))

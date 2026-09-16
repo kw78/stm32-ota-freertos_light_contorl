@@ -237,6 +237,14 @@ SECTIONS
     . = ALIGN(8);
   } >RAM
 
+  /* noinit 段：启动代码不初始化（不清零、不拷贝），SRAM 内容跨 系统/IWDG 复位
+   * 保留（仅上电复位丢失）。黑匣子崩溃现场邮箱放这里 */
+  .noinit (NOLOAD) :
+  {
+    . = ALIGN(4);
+    *(.noinit*)
+    . = ALIGN(4);
+  } >RAM
 
 
   /* Remove information from the standard libraries */

@@ -305,11 +305,10 @@ int main(void)
             flag_dirty = 1;
         }
 
+        // 复位原因标志保留给 App 侧 supervisor（转录黑匣子后由它清除）：
+        // App 每次开机都清标志，本 bootloader 开头读到的永远是"本次复位"的原因
         if (flag_dirty) flag_write(&flag);
     }
-
-    // 清除复位原因标志，保证下次开机读到的是"那一次"的原因
-    __HAL_RCC_CLEAR_RESET_FLAGS();
 
     SysTick->CTRL = 0;   // 关闭 Bootloader 的 SysTick，避免跳转后误触发
     jump_to_app();

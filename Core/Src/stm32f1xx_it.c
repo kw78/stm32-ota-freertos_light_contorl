@@ -88,16 +88,20 @@ void NMI_Handler(void)
 /**
   * @brief This function handles Hard fault interrupt.
   */
+/* naked：不生成 prologue（push/pop 依赖可能已损坏的栈）。
+ * 判断 EXC_RETURN bit2 选 msp/psp 取异常栈帧，交给 blackbox 捕获函数：
+ * 现场只写 noinit RAM 邮箱，随后关中断死等 IWDG 复位（复位原因保持为
+ * 看门狗，Bootloader 回滚计数才会认定固件跑挂） */
+void HardFault_Handler(void) __attribute__((naked));
 void HardFault_Handler(void)
 {
-  /* USER CODE BEGIN HardFault_IRQn 0 */
-
-  /* USER CODE END HardFault_IRQn 0 */
-  while (1)
-  {
-    /* USER CODE BEGIN W1_HardFault_IRQn 0 */
-    /* USER CODE END W1_HardFault_IRQn 0 */
-  }
+  __asm volatile(
+      "tst   lr, #4            \n"
+      "ite   eq                \n"
+      "mrseq r0, msp           \n"
+      "mrsne r0, psp           \n"
+      "b     HardFault_Capture \n"
+  );
 }
 
 /**

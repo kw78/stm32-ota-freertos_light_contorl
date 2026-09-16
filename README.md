@@ -214,6 +214,25 @@ IDLE ──OTA END──▶ PENDING ──Bootloader 校验+搬运──▶ TEST
 
 ---
 
+## 黑匣子与可观测性
+
+```text
+HardFault ──naked ASM 取栈帧──▶ .noinit RAM 邮箱（复位不丢）
+                                    │ 下次开机 supervisor 转录
+                                    ▼
+SPI Flash 环形日志区 ──CMD_GET_LOG──▶ ota_tool.py log（现场取证）
+```
+
+- **崩溃现场**：PC/LR/CFSR/HFSR/BFAR + 崩溃时刻 uptime，`tst lr,#4` 判 msp/psp 取异常栈帧
+- **死等看门狗而非主动复位**：HardFault 后关中断挂起等 IWDG——复位原因必须保持"看门狗"，
+  Bootloader 回滚计数才会认定固件跑挂（NVIC_SystemReset 会被记成软复位，逃过回滚）
+- **开机信**：每次开机记录 git 版本 / 复位原因（IWDG/PIN/POR/SFT...）/ 升级状态
+- **统计快照**：光照四态累计秒数每 30min 落盘，断电最多丢最后一段
+- **任务健康**：HAL tick + TIM3 秒计数 + OLED 刷屏心跳三项探针，任一停摆即停喂狗
+- 上位机：`python3 tools/ota_tool.py log /dev/ttyUSB0 [--kind blackbox|stats]`
+
+---
+
 ## Bootloader 流程
 
 ```text
