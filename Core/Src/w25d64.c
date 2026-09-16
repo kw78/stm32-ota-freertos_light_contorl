@@ -60,22 +60,35 @@ void W25_Read(uint32_t addr, uint8_t *buf, uint32_t len){
 void W25_WritePage(uint32_t addr, const uint8_t *data, uint16_t len){
     if (len > 256) return;
     uint8_t cmd_0 = W25_CMD_WRITE_ENABLE;
-    uint8_t cmd_1[4] = {
-        W25_CMD_PAGE_PROGRAM,
-        (addr >> 16) & 0xFF,   // addr 高字节
-        (addr >>  8) & 0xFF,   // addr 中字节
-        (addr      ) & 0xFF    // addr 低字节
-    };
 
-    W25_WaitBusy();
-    CS_Low();
-    HAL_SPI_Transmit(&hspi2, &cmd_0,1,100);
-    CS_High();
-    CS_Low();
-    HAL_SPI_Transmit(&hspi2, cmd_1,4,100);
-    HAL_SPI_Transmit(&hspi2,data,len,100);
-    CS_High();
-    W25_WaitBusy();
+    // 页编程在页边界会回卷到页首，一次写入跨页会静默覆盖页内开头的数据，
+    // 这里按页边界拆分成多次写入，调用方就不再受对齐限制
+    while (len > 0) {
+        uint32_t page_off = addr % W25_PAGE_SIZE;
+        uint32_t chunk = W25_PAGE_SIZE - page_off;
+        if (chunk > len) chunk = len;
+
+        uint8_t cmd_1[4] = {
+            W25_CMD_PAGE_PROGRAM,
+            (addr >> 16) & 0xFF,   // addr 高字节
+            (addr >>  8) & 0xFF,   // addr 中字节
+            (addr      ) & 0xFF    // addr 低字节
+        };
+
+        W25_WaitBusy();
+        CS_Low();
+        HAL_SPI_Transmit(&hspi2, &cmd_0,1,100);
+        CS_High();
+        CS_Low();
+        HAL_SPI_Transmit(&hspi2, cmd_1,4,100);
+        HAL_SPI_Transmit(&hspi2,data,chunk,100);
+        CS_High();
+        W25_WaitBusy();
+
+        addr += chunk;
+        data += chunk;
+        len  -= chunk;
+    }
 }
 
 void W25_EraseSector(uint32_t addr){

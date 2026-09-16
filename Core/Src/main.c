@@ -173,6 +173,17 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     }
 }
 
+// UART 出错（溢出/帧错误等）时 HAL 会停掉接收中断且默认回调为空，
+// 不重新挂起接收的话 OTA 通道会永久失效（一次 ORE 就足以触发）
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
+    if (huart->Instance == USART1) {
+        __HAL_UART_CLEAR_OREFLAG(huart);
+        __HAL_UART_CLEAR_NEFLAG(huart);
+        __HAL_UART_CLEAR_FEFLAG(huart);
+        HAL_UART_Receive_IT(&huart1, uart_rx_buf, 1);
+    }
+}
+
 
 
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
@@ -255,11 +266,6 @@ int main(void)
   uint32_t spi_id = W25_ReadID();
   uint8_t flag[4];
   W25_Read(OTA_FLAG_ADDR, flag, 4);
-  char id_buf[60];
-  int id_n = snprintf(id_buf, sizeof(id_buf),
-      "ID:%06lX FLAG:%02X%02X%02X%02X\r\n",
-      spi_id, flag[0], flag[1], flag[2], flag[3]);
-  HAL_UART_Transmit(&huart1, (uint8_t *)id_buf, (uint16_t)id_n, 100);
 
   // SPI 验证通过后再初始化其他外设（DMA、I2C 等）
   MX_DMA_Init();
@@ -291,6 +297,16 @@ int main(void)
   MX_TIM2_Init();
   MX_USART1_UART_Init();
   MX_TIM3_Init();
+
+  // 调试信息：SPI Flash ID + OTA 标志（必须在 MX_USART1_UART_Init 之后发送，
+  // 之前 huart1 未初始化，HAL_UART_Transmit 会直接返回 HAL_BUSY，什么都发不出去）
+  {
+    char id_buf[60];
+    int id_n = snprintf(id_buf, sizeof(id_buf),
+        "ID:%06lX FLAG:%02X%02X%02X%02X\r\n",
+        spi_id, flag[0], flag[1], flag[2], flag[3]);
+    HAL_UART_Transmit(&huart1, (uint8_t *)id_buf, (uint16_t)id_n, 100);
+  }
   /* USER CODE BEGIN 2 */
   OLED_Init();
   OLED_ShowString(0, 0, "Light Monitor");

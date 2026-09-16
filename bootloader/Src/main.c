@@ -150,18 +150,32 @@ static void __attribute__((naked)) jump_to_app(void){
 }
 // debug得出
 
-// 搬运固件，带回读校验，返回 0=成功, -1=写入失败, -2=回读校验失败
+// 搬运固件，带回读校验，返回 0=成功, -1=写入失败, -2=回读校验失败, -3=擦除失败
 static int copy_firmware(uint32_t src_addr, uint32_t dst_addr, uint32_t size){
     uint8_t buf[256];
     uint8_t readback[256];
     HAL_FLASH_Unlock();
+
+    // F1 内部 Flash 只能 1->0 编程，必须先按页擦除目标区域，
+    // 否则旧 App 残留的 0 位会让回读校验失败（且 CRC 与预期不符）
+    FLASH_EraseInitTypeDef erase = {0};
+    uint32_t page_err = 0;
+    erase.TypeErase    = FLASH_TYPEERASE_PAGES;
+    erase.Banks        = FLASH_BANK_1;
+    erase.PageAddress  = dst_addr;
+    erase.NbPages      = (size + FLASH_PAGE_SIZE - 1) / FLASH_PAGE_SIZE;
+    if (HAL_FLASHEx_Erase(&erase, &page_err) != HAL_OK) {
+        HAL_FLASH_Lock();
+        return -3;
+    }
+
     for(uint32_t pos = 0; pos < size; pos += 256){
         uint32_t chunk = (size - pos > 256) ? 256 : (size - pos);
         // 从 SPI Flash 读取
         W25_Read(src_addr + pos, buf, chunk);
-        // 写入内部 Flash（半字）
+        // 写入内部 Flash（半字），奇数字节的补位写 0xFF（保持擦除态）
         for(uint32_t i = 0; i < chunk; i += 2){
-            uint16_t halfword = buf[i] | (buf[i+1] << 8);
+            uint16_t halfword = buf[i] | ((i + 1 < chunk ? buf[i+1] : 0xFF) << 8);
             if(HAL_FLASH_Program(FLASH_TYPEPROGRAM_HALFWORD, dst_addr + pos + i, halfword) != HAL_OK){
                 HAL_FLASH_Lock();
                 return -1;
@@ -190,6 +204,7 @@ int main(void)
     uint32_t spi_id = W25_ReadID();
     if (spi_id == 0x000000 || spi_id == 0xFFFFFF) {
         // SPI Flash 不响应，直接跳转 App
+        SysTick->CTRL = 0;   // 关闭 Bootloader 的 SysTick，避免跳转后误触发
         jump_to_app();
         while(1) {}
     }
@@ -241,6 +256,7 @@ int main(void)
         }
     }
 
+    SysTick->CTRL = 0;   // 关闭 Bootloader 的 SysTick，避免跳转后误触发
     jump_to_app();
     while(1) {}
 }

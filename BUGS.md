@@ -652,6 +652,179 @@ HAL_NVIC_SetPriority(DMA1_Channel6_IRQn, 7, 0);
 
 ---
 
+## Bug #10：Bootloader 搬运固件前缺少内部 Flash 擦除（代码审查发现）
+
+> 来源：OTA 全链路代码审查（fix/ota-bugfix 分支），非硬件现场调试。
+
+### 现象（推演）
+
+在 App 已经在运行的情况下做第二次 OTA 升级，Bootloader 搬运后 App 行为异常或直接 HardFault；且由于 PENDING 标志被保留（回读校验失败 → 重试 → 再失败），设备表现为每次复位都"卡在 Bootloader"。
+
+### 根因
+
+`copy_firmware()` 直接 `HAL_FLASH_Program` 写内部 Flash，**没有先擦除 App 区**。STM32F1 的 Flash 编程只能把 bit 从 1 写成 0（相当于按位与）：
+
+```text
+旧 App 字节: 0xB4 (1011_0100)
+新固件字节: 0x3C (0011_1100)
+编程结果:   0xB4 & 0x3C = 0x34 (0011_0100)   ← 既不是旧也不是新
+```
+
+之前 OTA 测试之所以"能过"，是因为 `flash.sh` 每次烧录前都执行 `flash erase_address 0x08000000 0x10000` 全片擦除——App 区碰巧处于全 0xFF 擦除态，掩盖了缺失的擦除步骤。这是一个**测试流程掩盖了代码缺陷**的典型案例。
+
+### 修复
+
+`bootloader/Src/main.c` 的 `copy_firmware()` 在编程前按 1KB 页擦除目标区域：
+
+```c
+FLASH_EraseInitTypeDef erase = {0};
+uint32_t page_err = 0;
+erase.TypeErase    = FLASH_TYPEERASE_PAGES;
+erase.Banks        = FLASH_BANK_1;
+erase.PageAddress  = dst_addr;
+erase.NbPages      = (size + FLASH_PAGE_SIZE - 1) / FLASH_PAGE_SIZE;
+if (HAL_FLASHEx_Erase(&erase, &page_err) != HAL_OK) {
+    HAL_FLASH_Lock();
+    return -3;
+}
+```
+
+同时修复了附带问题：固件大小为奇数时，最后一个半字的高字节会读到 `buf[]` 的越界残留值，现在固定补写 0xFF（保持擦除态）。
+
+### 教训
+
+> Flash 编程模型（只能 1→0）决定了"擦除→编程"是不可拆分的原子操作序列。测试时"每次全片擦除再烧录"的习惯会掩盖缺失的擦除逻辑——**代码正确性不能依赖测试流程的副作用**。回归测试必须覆盖"不擦除直接 OTA"的场景。
+
+---
+
+## Bug #11：OTA 协议解析器三连缺陷 — 状态机卡死 / 越界写栈 / 无帧超时（代码审查发现）
+
+### 现象（推演）
+
+- UART 上出现任何一个 CRC16 校验失败的包之后，后续**所有**包都无法再被解析，OTA 会话永久卡死，上位机只能等超时；
+- 一个 `len > 64` 的畸形包（哪怕 CRC 恰好碰对）会让 `memcpy(tmp + 2, pkt_buf, pkt_len)` 越界写穿 66 字节的栈缓冲；
+- 任何原因丢失一个字节（如上位机串口抖动），状态机停在 `PKT_WAIT_DATA` 等一个永远不会来的字节，之后整包数据被当作数据字节吞掉。
+
+### 根因
+
+`Pkt_ParseByte()` 的三个独立缺陷：
+
+```c
+// 缺陷 1：CRC 失败分支没有复位状态机
+if (calc_crc == received_crc) {
+    pkt_state = PKT_WAIT_HEADER;   // 只有成功才复位！
+    return 1;
+}
+// CRC 错误后 pkt_state 仍是 PKT_WAIT_CRC，
+// 后续每 2 个字节被当作一组"重试的 CRC"，解析器与字节流永久失步
+
+// 缺陷 2：pkt_len 未校验上界
+case PKT_WAIT_LEN:
+    pkt_len = byte;                // byte 可以是 0~255，但 pkt_buf 只有 64 字节
+    ...
+// PKT_WAIT_DATA 里"写"有 if 保护，但 CRC 状态里 memcpy(tmp+2, pkt_buf, pkt_len)
+// 用的是原始 pkt_len → tmp[66] 栈溢出
+
+// 缺陷 3：无帧内超时
+// 丢一个字节 → 永远停在中间状态等剩余字节
+```
+
+### 修复
+
+`Core/Src/ota.c`：
+
+1. CRC 校验**无论成败**都先回到 `PKT_WAIT_HEADER`；
+2. `PKT_WAIT_LEN` 处校验 `byte > 64` 直接丢弃整包（`tmp` 缓冲也改为 `2 + PKT_DATA_MAX` 显式关联大小）；
+3. 新增帧内超时：记录每个包首字节时间戳，停留在中间状态超过 500ms（115200 波特率下字节约 87µs 间隔，余量 5000 倍）即丢弃残包、从当前字节重新找帧头 `0xAA`。
+
+### 教训
+
+> 流式协议解析器的健壮性三要素缺一不可：**错误路径必须与成功路径对称地复位状态**、**长度字段在进入缓冲区前必须校验上界**、**中间状态必须有超时出口**。写解析器时应该问自己：每一个 `case` 的入口，是否都能从任意一个错误场景到达？
+
+---
+
+## Bug #12：UART 溢出错误后接收通道永久失效（代码审查发现）
+
+### 现象（推演）
+
+OTA 传输过程中任何一次 UART 溢出（ORE，例如上位机在设备忙于擦除 SPI Flash 时重发数据），此后设备对串口输入完全无响应，只能断电重启恢复。
+
+### 根因
+
+`HAL_UART_IRQHandler` 对 ORE 的处理是调用 `UART_EndRxTransfer()`：把 RxState 置回 READY 并**关闭 RXNE 中断**，然后调用 `HAL_UART_ErrorCallback()`——而工程没有实现这个回调，弱符号默认实现是空的。于是接收中断被关闭后再也没有人重新挂起 `HAL_UART_Receive_IT`，接收通道"安静地死亡"。
+
+修复前的接收链路只处理了"正常收到字节"这一条路径，错误路径完全没有出口。
+
+### 修复
+
+`Core/Src/main.c` 实现错误回调，清标志后重新挂起接收：
+
+```c
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
+    if (huart->Instance == USART1) {
+        __HAL_UART_CLEAR_OREFLAG(huart);
+        __HAL_UART_CLEAR_NEFLAG(huart);
+        __HAL_UART_CLEAR_FEFLAG(huart);
+        HAL_UART_Receive_IT(&huart1, uart_rx_buf, 1);
+    }
+}
+```
+
+### 教训
+
+> HAL 的回调族是成对出现的：`RxCpltCallback`（正常路径）与 `ErrorCallback`（错误路径）。只覆盖正常路径的驱动代码，在第一次总线异常时就会失效。**每个启用中断的外设，都必须回答"错误中断来了谁负责恢复"。**
+
+---
+
+## Bug #13：OTA 会话缺少状态与边界校验（代码审查发现）
+
+### 现象（推演）
+
+- 上位机直接发 DATA/END（没有 START），固件会从地址 0 写 SPI Flash 暂存区并回 ACK，破坏上一次会话的数据；
+- START 包里 `fw_size` 字段被干扰成 `0xFFFFFF00` 之类的值，擦除循环按 `addr < OTA_FW_ADDR + fw_size` 判断，会把 SPI Flash 上固件区之后的所有分区（配置参数、日志）全部擦光，且每个扇区擦除 ~45ms，设备"假死"数分钟；
+- DATA 包超出 56KB 上限时固件**静默丢弃**（裸 `break`，无 NACK），上位机只能干等 5 秒超时；
+- `W25_WritePage` 一次写入跨越 256 字节页边界时，芯片行为是地址回卷到页首——尾部数据静默覆盖页内开头的数据（当前 64 字节对齐的分包恰好不跨页，但这是调用约定的巧合而非驱动的保证）。
+
+### 根因
+
+处理函数信任了协议对端：`fw_size`、会话顺序、长度对齐全都假设上位机"一定是善意的、正确的"。错误场景要么没有处理，要么处理后不通知对端。
+
+### 修复
+
+`Core/Src/ota.c` + `Core/Src/w25d64.c`：
+
+1. 新增 `ota_active` 会话标志：START 置位，END/写入失败复位；**没有活跃会话的 DATA/END 一律 NACK**；
+2. START 校验 `0 < fw_size <= OTA_FW_MAX_SIZE`，非法值 NACK；擦除范围收窄为"标志区 + 固件实际占用的扇区"，不再多擦也不越界；
+3. END 先校验 `ota_bytes_written == ota_fw_size`（缺包不进 CRC 流程），全部错误路径显式 NACK，让上位机秒级失败而不是等超时；
+4. DATA 写入失败时置 `ota_active = 0`（数据已错位，会话必须作废重传）；
+5. `W25_WritePage` 内部按页边界自动拆分多次编程，驱动不再依赖调用方的对齐约定。
+
+### 教训
+
+> 固件侧协议实现必须把对端当作"会发任何字节序列"的黑盒：**每一个从包里解析出来的数值字段，使用前都要过一遍范围校验**；**每一个错误分支，都要让对端能感知（NACK/超时），否则故障被静默吞掉，表现为难以定位的"对端超时"**。驱动层的硬件约束（页边界、扇区对齐）应该在驱动内部消化，而不是写成对调用方的隐式要求。
+
+---
+
+## Bug #14：启动调试打印在 UART 初始化之前发送（代码审查发现）
+
+### 现象
+
+上电后串口看不到设计中的 `ID:xxxxxx FLAG:xx...` 调试输出。
+
+### 根因
+
+`main()` 里调试打印调用在 `MX_USART1_UART_Init()` 之前，此时 `huart1` 还是全零的静态结构体，`gState = HAL_UART_STATE_RESET ≠ READY`，`HAL_UART_Transmit` 直接返回 `HAL_BUSY`——不崩溃，但一个字节都发不出去。这类"外设句柄未初始化就使用"的错误因为 HAL 的防御性检查而静默失败，极易被忽略。
+
+### 修复
+
+把打印移到 `MX_USART1_UART_Init()` 之后（SPI ID 的读取保持在 DMA 初始化之前不动，只移动发送）。
+
+### 教训
+
+> HAL 句柄是"必须先 Init 才能用"的有状态对象，防御性检查让误用变成静默 no-op。**调试输出不工作是"外设初始化顺序错误"最便宜的探测器**，值得第一时间核对。
+
+---
+
 ## Debug 方法论总结
 
 | 方法 | 工具 | 适用场景 | 实际案例 |

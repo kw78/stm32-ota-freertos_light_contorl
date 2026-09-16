@@ -198,9 +198,9 @@ CMD_OTA_END   (0x03): 无数据                   → 设备校验 + 设置标�
 
 | 区域 | 大小 | 已用 | 占比 |
 |------|------|------|------|
-| Flash (App) | 54KB | 37KB | 67.8% |
-| Flash (Bootloader) | 8KB | 6.2KB | 75.7% |
-| RAM | 20KB | 15.2KB | 74.2% |
+| Flash (App) | 54KB | 37.6KB | 69.6% |
+| Flash (Bootloader) | 8KB | 6.9KB | 85.6% |
+| RAM | 20KB | 15KB | 75.2% |
 
 ---
 
@@ -229,7 +229,7 @@ sudo python3 tools/ota_upload.py /dev/ttyUSB0 build/Debug/gcctest.bin 115200
 
 ## 遇到的技术难题
 
-共 9 个高难度 Bug，完整调试过程记录在 [BUGS.md](BUGS.md)：
+共 14 个高难度 Bug，完整调试过程记录在 [BUGS.md](BUGS.md)：
 
 | # | 问题 | 根因 | 修复 |
 |---|------|------|------|
@@ -242,3 +242,8 @@ sudo python3 tools/ota_upload.py /dev/ttyUSB0 build/Debug/gcctest.bin 115200
 | 7 | SPI 读回值每次不同（bit 翻转） | 面包板信号完整性（寄生电容串扰） | 杜邦线直连 + 去耦电容 |
 | 8 | Task_OLED/Task_LED 不执行 | 高优先级 Task_Light 缺 osDelay 饿死低优先级任务 | 加 osDelay(10) |
 | 9 | OTA 后设备卡死在 DMA 中断 | DMA 优先级=FreeRTOS 阈值 + ADC 启动在信号量创建之前 | DMA 优先级改 7 + 移动启动顺序 |
+| 10 | 二次 OTA 后 App 数据错乱 | Bootloader 搬运前缺少内部 Flash 页擦除（此前被全片擦除的烧录流程掩盖） | copy_firmware 先按页擦除再编程 |
+| 11 | CRC 错一个包后 OTA 永久卡死 | 解析器 CRC 失败不复位状态机 + len 无上界校验（栈溢出）+ 无帧超时 | 对称复位 + len 校验 + 500ms 帧内超时 |
+| 12 | UART 溢出后串口永久无响应 | ORE 后 HAL 关闭 RX 中断，ErrorCallback 默认为空无人恢复 | 实现错误回调清标志并重挂接收 |
+| 13 | 异常包可擦光 SPI Flash 其他分区 | fw_size 无范围校验、无会话状态机、错误静默无 NACK、跨页写入回卷 | 会话标志 + 全字段校验 + 显式 NACK + 页边界拆分 |
+| 14 | 上电调试串口无输出 | 打印在 MX_USART1_UART_Init 之前，句柄未初始化静默返回 BUSY | 移到 UART 初始化之后 |
