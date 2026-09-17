@@ -207,6 +207,7 @@ int main(void)
    * 整个启动过程都在保护圈内，跑挂最多一次 IWDG 复位，不会无限僵死。
    * IWDG 一旦启动只能复位停止，supervisor 运行后收紧到 8s 并按健康喂狗 */
   Supervisor_IWDGEarlyArm();
+  Supervisor_PVDInit();      /* 欠压探测尽早武装：启动早期的电源毛刺也要留痕 */
 
   /* USER CODE BEGIN 1 */
 

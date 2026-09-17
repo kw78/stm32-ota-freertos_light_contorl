@@ -51,6 +51,49 @@ void Supervisor_IWDGFeed(void)
     IWDG->KR = IWDG_KEY_FEED;
 }
 
+/* ---- PVD 欠压探测（EXTI16）：good2 调查 + 电源健康监控 ----
+ * F1 没有欠压复位标志（无 BOR），只能中断捕捉：VDD 跌破 2.9V 时 PVDO
+ * 置位触发 EXTI16。ISR 只写 .noinit RAM——欠压瞬间 SPI/Flash 操作不可靠。
+ * dip 后电源恢复（未走到复位）：supervisor 运行期轮询补记 REC_PVD；
+ * dip 导致复位：SRAM 内容在 VDD≥~1.5V 期间保持，下次开机转录。
+ * "黑匣子扫描中途设备复位"（HANDOFF good2 调查）的头号嫌疑就是供电毛刺，
+ * 这条记录用于证实/证伪。 */
+#define PVD_DIP_MAGIC   0x50564431u   /* 'PVD1' */
+
+typedef struct {
+    uint32_t magic;
+    uint32_t count;                     /* 捕捉到的欠压次数（转录成功后清零） */
+    uint32_t uptime;                    /* 最近一次欠压时的开机毫秒 */
+} PvdMailbox_t;
+
+__attribute__((section(".noinit"))) static PvdMailbox_t g_pvd_mailbox;
+
+void PVD_IRQHandler(void)
+{
+    if (EXTI->PR & (1u << 16)) {
+        EXTI->PR = (1u << 16);          /* 写 1 清挂起 */
+        if (g_pvd_mailbox.magic != PVD_DIP_MAGIC) {
+            g_pvd_mailbox.magic  = PVD_DIP_MAGIC;
+            g_pvd_mailbox.count  = 0;
+            g_pvd_mailbox.uptime = 0;
+        }
+        g_pvd_mailbox.count++;
+        g_pvd_mailbox.uptime = HAL_GetTick();
+    }
+}
+
+void Supervisor_PVDInit(void)
+{
+    RCC->APB1ENR |= RCC_APB1ENR_PWREN;
+    PWR->CR = (PWR->CR & ~PWR_CR_PLS) | PWR_CR_PLS_LEV6 | PWR_CR_PVDE;  /* 阈值 2.9V */
+    EXTI->IMR  |=  (1u << 16);          /* EXTI16 = PVD 输出 */
+    EXTI->RTSR |=  (1u << 16);          /* 上升沿：VDD 跌入阈值以下 */
+    EXTI->FTSR &= ~(1u << 16);
+    EXTI->PR = (1u << 16);
+    HAL_NVIC_SetPriority(PVD_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(PVD_IRQn);
+}
+
 /* ---- 参数 ---- */
 #define SUPERVISOR_PERIOD_MS   2000
 #define CONFIRM_DELAY_MS       10000
@@ -209,6 +252,16 @@ static void blackbox_boot_log(void)
         if (Log_Write(LOG_BLACKBOX, REC_FAULT, f) == 0)
             g_crash_mailbox.magic = 0;
     }
+
+    /* PVD 欠压转录：跨复位存活的邮箱 → REC_PVD（转录成功才清计数） */
+    if (g_pvd_mailbox.magic == PVD_DIP_MAGIC && g_pvd_mailbox.count != 0) {
+        memset(f, 0, sizeof(f));
+        f[0] = g_pvd_mailbox.count;
+        f[1] = g_pvd_mailbox.uptime;
+        f[2] = (PWR->CSR & PWR_CSR_PVDO) ? 1u : 0u;   /* 开机瞬间是否仍欠压 */
+        if (Log_Write(LOG_BLACKBOX, REC_PVD, f) == 0)
+            g_pvd_mailbox.count = 0;
+    }
     Supervisor_IWDGFeed();
     g_ota_backup_busy = 0;
 
@@ -226,6 +279,7 @@ void StartTaskSupervisor(void *argument)
     uint32_t healthy_since = 0;          /* 0 = 尚未开始连续健康计时 */
     uint8_t  confirmed = 0;              /* 本次开机只确认一次 */
     uint32_t last_stats_tick = HAL_GetTick();
+    uint32_t pvd_logged_count = 0;       /* 已转录的欠压计数（防重复落盘） */
 
     /* 运行期收紧看门狗：从 26s 早期窗口收紧到 8s（LSI 典型值） */
     iwdg_reload_config(IWDG_RLR_RUN);
@@ -252,6 +306,19 @@ void StartTaskSupervisor(void *argument)
                 APP_VERSION,
             };
             Log_Write(LOG_STATS, REC_STATS, f);
+            g_ota_backup_busy = 0;
+            Supervisor_IWDGFeed();
+        }
+
+        /* 欠压 dip 未引发复位时运行期补记（复位路径由 blackbox_boot_log 转录） */
+        if (g_pvd_mailbox.magic == PVD_DIP_MAGIC &&
+            g_pvd_mailbox.count != pvd_logged_count) {
+            uint32_t f[6] = {0};
+            f[0] = g_pvd_mailbox.count;
+            f[1] = g_pvd_mailbox.uptime;
+            g_ota_backup_busy = 1;
+            if (Log_Write(LOG_BLACKBOX, REC_PVD, f) == 0)
+                pvd_logged_count = g_pvd_mailbox.count;
             g_ota_backup_busy = 0;
             Supervisor_IWDGFeed();
         }

@@ -19,4 +19,7 @@ void StartTaskSupervisor(void *argument);
 void Supervisor_IWDGEarlyArm(void);
 void Supervisor_IWDGFeed(void);
 
+/* PVD 欠压探测（EXTI16，阈值 2.9V）：main.c 早期启动一次 */
+void Supervisor_PVDInit(void);
+
 #endif

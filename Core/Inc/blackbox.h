@@ -21,6 +21,7 @@
 #define REC_BOOT        1       /* f: fw_version, reset_csr, state/golden<<8|retry, 0, 0, 0     */
 #define REC_FAULT       2       /* f: cfsr, hfsr, bfar, pc, lr, uptime_at_crash                  */
 #define REC_STATS       3       /* f: uptime, dark_s, dim_s, ideal_s, glare_s, fw_version       */
+#define REC_PVD         4       /* f: dip_count, uptime_at_dip, pvdo_now, 0, 0, 0              */
 
 typedef struct {
     uint16_t magic;              /* LOG_REC_MAGIC */
