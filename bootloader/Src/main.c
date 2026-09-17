@@ -151,8 +151,19 @@ static void __attribute__((naked)) jump_to_app(void){
 // debug得出
 
 // 搬运固件，带回读校验，返回 0=成功, -1=写入失败, -2=回读校验失败, -3=擦除失败
-static int copy_firmware(uint32_t src_addr, uint32_t dst_addr, uint32_t size){    uint8_t buf[256];
+// 喂狗：IWDG 未启用时写 KR 是无害 no-op。上板实测发现 F1 的 IWDG 配置跨
+// 系统复位保留（App 运行期收紧的 8s 窗口会延续到 Bootloader），搬运 43KB
+// 期间必须持续喂狗，否则看门狗可能在搬运中途咬人
+static void iwdg_feed(void)
+{
+    IWDG->KR = 0xAAAAu;
+}
+
+// 搬运固件，带回读校验，返回 0=成功, -1=写入失败, -2=回读校验失败, -3=擦除失败
+static int copy_firmware(uint32_t src_addr, uint32_t dst_addr, uint32_t size){
+    uint8_t buf[256];
     uint8_t readback[256];
+    iwdg_feed();
     HAL_FLASH_Unlock();
 
     // F1 内部 Flash 只能 1->0 编程，必须先按页擦除目标区域，
@@ -170,6 +181,7 @@ static int copy_firmware(uint32_t src_addr, uint32_t dst_addr, uint32_t size){  
 
     for(uint32_t pos = 0; pos < size; pos += 256){
         uint32_t chunk = (size - pos > 256) ? 256 : (size - pos);
+        iwdg_feed();                      // 擦写期间持续喂狗（页擦除最坏 ~40ms/页）
         // 从 SPI Flash 读取
         W25_Read(src_addr + pos, buf, chunk);
         // 写入内部 Flash（半字），奇数字节的补位写 0xFF（保持擦除态）

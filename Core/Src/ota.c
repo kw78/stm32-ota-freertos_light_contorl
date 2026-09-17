@@ -2,6 +2,7 @@
 #include "w25d64.h"
 #include "blackbox.h"
 #include "light_ctrl.h"
+#include "supervisor.h"
 #ifdef USE_FREERTOS
 #include "cmsis_os.h"
 #endif
@@ -347,6 +348,7 @@ static void OTA_HandlePacket(uint8_t cmd, const uint8_t *data, uint8_t len)
         #ifdef USE_FREERTOS
         osDelay(100);
         #endif
+        Supervisor_IWDGFeed();   // 复位前喂满狗：IWDG 跨复位保留，给 Bootloader 搬运留足窗口
         NVIC_SystemReset();     // 进入 Bootloader 搬运
     } break;
 

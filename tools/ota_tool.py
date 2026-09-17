@@ -230,10 +230,14 @@ def cmd_log(args) -> int:
     print(f"{'黑匣子' if which == LOG_BLACKBOX else '统计快照'}记录（扫描 {cap} 槽）:")
     count = 0
     for idx in range(cap):
-        ser.write(make_packet_v2(CMD_GET_LOG, struct.pack('<BH', which, idx)))
-        rec = read_packet_v2(ser, CMD_GET_LOG, timeout=2.0)
+        rec = None
+        for attempt in range(2):          # 单槽重试一次，避免偶发丢包中止整轮扫描
+            ser.write(make_packet_v2(CMD_GET_LOG, struct.pack('<BH', which, idx)))
+            rec = read_packet_v2(ser, CMD_GET_LOG, timeout=2.0)
+            if rec is not None:
+                break
         if rec is None:
-            print("  设备无响应（超时或设备忙，稍后重试）")
+            print("  设备无响应（重试后仍超时），中止扫描")
             break
         if len(rec) == 0:
             continue                      # 无效槽位
