@@ -1,0 +1,62 @@
+# HIL（硬件在环）验收：真板全链路回归
+#
+# 前置（runner 机器一次性配置，见 tools/hil_accept.py --help）：
+#   1. self-hosted runner 打标签 [self-hosted, stm32-hil]
+#   2. 安装 arm-none-eabi-gcc / cmake / ninja / openocd / python3 + pyserial
+#   3. ST-Link 与 CH340 串口接到 runner（WSL2 需 usbipd attach，串口固定路径）
+#   4. Secrets/HOST 变量：HIL_PORT（如 /dev/ttyUSB0）
+#
+# 触发：手动 workflow_dispatch，或打 tag（v*）——发版前真板回归
+name: hil
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  hardware-acceptance:
+    runs-on: [self-hosted, stm32-hil]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build good app + bootloader
+        run: |
+          cmake --preset Debug
+          cmake --build build/Debug
+          cd bootloader && cmake -B build -DCMAKE_TOOLCHAIN_FILE=../cmake/gcc-arm-none-eabi.cmake && cmake --build build && cd ..
+
+      - name: Build bad-fw acceptance image (BAD_FW_TEST)
+        run: |
+          cmake -B build/badfw -DCMAKE_BUILD_TYPE=Debug -DBAD_FW_TEST=ON \
+                -DCMAKE_TOOLCHAIN_FILE=cmake/gcc-arm-none-eabi.cmake
+          cmake --build build/badfw
+
+      - name: Convert binaries
+        run: |
+          arm-none-eabi-objcopy -O binary build/Debug/gcctest.elf build/Debug/gcctest.bin
+          arm-none-eabi-objcopy -O binary build/badfw/gcctest.elf build/badfw/gcctest.bin
+
+      - name: Size gate (both images)
+        run: |
+          arm-none-eabi-objcopy -O binary build/Debug/gcctest.elf /tmp/app.bin
+          arm-none-eabi-objcopy -O binary bootloader/build/bootloader.elf /tmp/boot.bin
+          python3 tools/ci_manifest.py /tmp/app.bin /tmp/boot.bin
+
+      - name: Host gates (model check + protocol fuzz)
+        run: |
+          python3 tools/model_check.py
+          test/fuzz/run.sh 30
+
+      - name: Hardware acceptance (flash + OTA + rollback + blackbox)
+        env:
+          HIL_PORT: ${{ vars.HIL_PORT || '/dev/ttyUSB0' }}
+        run: |
+          python3 tools/hil_accept.py --port "$HIL_PORT" \
+            --good build/Debug/gcctest.bin \
+            --bad build/badfw/gcctest.bin \
+            --flash
+
+      - name: Summary
+        if: always()
+        run: echo "HIL acceptance finished — see step logs for [ci-hil] verdict"

@@ -35,6 +35,12 @@ jobs:
           python3 tools/ci_manifest.py /tmp/app.bin /tmp/boot.bin
           cat build/manifest.json
 
+      - name: Model check (bootloader power-cut exhaustive)
+        run: python3 tools/model_check.py
+
+      - name: Protocol fuzz (host, ASan/UBSan, 30s)
+        run: test/fuzz/run.sh 30
+
       - name: Upload manifest artifact
         uses: actions/upload-artifact@v4
         with:

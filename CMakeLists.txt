@@ -85,6 +85,12 @@ target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined symbols
 )
 
+# 回滚验收镜像开关（HIL/chaos 用）：banner 后立即写空指针制造 HardFault 崩溃循环，
+# 验证 Bootloader 自动回滚。构建：cmake -B build/badfw -DBAD_FW_TEST=ON
+if(BAD_FW_TEST)
+    target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE BAD_FW_TEST)
+endif()
+
 # Remove wrong libob.a library dependency when using cpp files
 list(REMOVE_ITEM CMAKE_C_IMPLICIT_LINK_LIBRARIES ob)
 
