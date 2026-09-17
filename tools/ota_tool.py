@@ -38,7 +38,7 @@ CMD_LIGHT_CTRL = 0x20
 
 LOG_BLACKBOX  = 1
 LOG_STATS     = 2
-REC_NAMES     = {1: 'BOOT', 2: 'FAULT', 3: 'STATS'}
+REC_NAMES     = {1: 'BOOT', 2: 'FAULT', 3: 'STATS', 4: 'PVD'}
 
 ACK  = 0x06
 NACK = 0x15
@@ -82,8 +82,10 @@ def read_packet_v2(ser: serial.Serial, want_cmd: int, timeout: float):
     while time.time() < deadline:
         if ser.in_waiting > 0:
             buf += ser.read(ser.in_waiting)
-            # 找帧头
-            while len(buf) >= 8:      # 最小帧: AA CMD LEN SEQ(2) (0 data) CRC(2)
+            # 找帧头。最小帧 = 头+cmd+len+seq(2)+crc(2) = 7 字节（0 载荷，
+            # 如 GET_LOG 空槽响应）。原写 >=8：空槽响应永远解析不出来，
+            # log 扫描必死在第一条空记录上，被误读成"设备中途复位"（Bug #19）
+            while len(buf) >= 7:
                 idx = buf.find(bytes([PKT_HEADER, want_cmd]))
                 if idx < 0:
                     buf = buf[-1:]
@@ -217,6 +219,9 @@ def decode_record(rec: bytes) -> str:
     if kind == 3:      # REC_STATS: uptime, dark, dim, ideal, glare, ver
         return (f'  STATS seq={seq:5d} uptime={f[0]}s dark={f[1]} dim={f[2]} '
                 f'ideal={f[3]} glare={f[4]} v{f[5]:08X}')
+    if kind == 4:      # REC_PVD: dip_count, uptime_at_dip, pvdo_now
+        return (f'  PVD   seq={seq:5d} 欠压dip×{f[0]} 最近于{f[1]}ms'
+                f'{" ⚠开机仍欠压" if f[2] else ""}')
     return f'  ???   seq={seq:5d} kind={kind} f={f}'
 
 
