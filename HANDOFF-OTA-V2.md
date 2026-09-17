@@ -19,6 +19,26 @@
 5. dim on/off 协议链路 OK
 6. 实测发现并已加固：**IWDG PR/RLR 跨系统复位保留**（BUGS.md #15）→ bootloader 搬运逐块喂狗 + OTA END 复位前喂狗
 
+## ✅ 未解之谜结案（2026-09-17 第三会话，真板复测）
+
+1. **"扫描中途设备无响应"已破案**：上位机 `read_packet_v2` 最小帧按 8 字节算，
+   空槽的 7 字节响应解析不出（BUGS.md #19）——设备从未在扫描中复位，
+   "供电毛刺导致复位"假说不成立（原始扫描点固定在第 9 槽=第一条空槽）。
+2. **good2 上传后运行旧版：不复现**。新 bootloader（含 BT 跟踪 + #18 修复）下，
+   金固件已建立状态做连续第二次上传（版本 CAFE0001 实测）：TESTING 运行新版 →
+   确认 → IDLE，安装正确。原始异常伴随"热换 bootloader"的脏状态（黑匣子 seq 6
+   为证），无法归因；黑匣子 8 条记录已全部取出归档（/tmp/blackbox_before_reflash.txt），
+   无丢失。若复发，开机 BT 决策行会直接暴露岔路。
+3. **SPI Flash JEDEC 0x207017 实锤**（BT id=00207017），驱动按通用 SPI NOR
+   时序工作正常（本会话 3 次 OTA + 回滚 + 黑匣子读写全部正常），维持"兼容使用"结论。
+
+### 本会话真板验收结果
+
+- 基线重烧（boot 7748B @BRR 修复 + app E5A92E13）✓，BT 跟踪可读 ✓
+- HIL 全链路 8/8：good 升级确认金固件 ✓ / BADF0001 崩溃→IWDG×4→自动回滚→
+  版本恢复 ✓ / 黑匣子 REC_FAULT 转录 ✓（`tools/hil_accept.py`）
+- good2 圍复测（上文）✓；混沌测试结果见 /tmp/chaos_real.csv
+
 ## ⚠️ 未解之谜（新会话第一优先）
 
 **good2（v2F3363F，含加固）OTA 上传后设备运行的是旧版 2BF95EA3。**
@@ -37,6 +57,17 @@
 1. slot A 镜像在"确认备份/第二次上传"交互中被污染（golden_backup 或 END 写 hdr/flag 的地址/时序问题）
 2. SPI Flash 实为 JEDEC 0x207017（ST 系，非 Winbond 0xEF4017），4KB 擦除语义/时序差异（但第 1 次 OTA 全链路成功，矛盾点）
 3. IWDG 在安装中途打断造成半写循环
+
+### 本轮已落地的调查增强（2026-09-17 第二会话）
+
+- **Bootloader UART 跟踪已实现**（BOOT_TRACE，寄存器级 TX ~400B，boot 7748B/8KB 闸门内）：
+  每次开机打印 `BT rst=<CSR> id=<JEDEC> st=<state><golden> ry=<retry>` 及
+  vA/cp/rbg 等决策摘要——上面步骤 2/3 的"openocd 读 Flash"大部分可以换成直接看串口
+- **PVD 欠压记录已实现**：VDD<2.9V 触发 EXTI16 → noinit 邮箱 → 黑匣子 REC_PVD
+  （`ota_tool.py log` 已解码）。"扫描中途设备无响应"若与欠压相关，重启后会有 PVD 记录
+- **模型检查/混沌台/fuzz 台/HIL 流水线**见 README P5；fuzz 顺手修了 ota.c 两个
+  潜伏缺陷（BUGS.md #16/#17），bootloader 回滚门槛修复见 #18——**bootloader 已改动，
+  复测 good2 前需重烧 boot**
 
 ### 调查步骤建议
 

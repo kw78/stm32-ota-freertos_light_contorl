@@ -272,9 +272,9 @@ SPI Flash 环形日志区 ──CMD_GET_LOG──▶ ota_tool.py log（现场取
 
 | 区域 | 大小 | 已用 | 占比 |
 |------|------|------|------|
-| Flash (App) | 54KB | 39KB | 72.2% |
-| Flash (Bootloader) | 8KB | 7.2KB | 89.6% |
-| RAM | 20KB | 15.1KB | 75.5% |
+| Flash (App) | 54KB | 43KB | 79.2% |
+| Flash (Bootloader) | 8KB | 7.6KB | 94.6% |
+| RAM | 20KB | 16.2KB | 81.0% |
 
 ---
 
@@ -311,8 +311,25 @@ sudo python3 tools/ota_tool.py dim /dev/ttyUSB0 on --target 1100
 - [x] **P1** OTA v2：分区契约 + 确认启动/回滚 + 协议 v2（SEQ 幂等）+ IWDG
 - [x] **P2** 可靠性：黑匣子 + HardFault 现场捕获 + 统计持久化 + 健康探针
 - [x] **P3** 光照闭环调光（PA7 硬件 PWM，零新增硬件）
+- [x] **P5** 可证明的可靠：穷举断电模型检查（264 场景 0 变砖，并揪出修复前
+      唯一 BRICK 路径 → Bug #18）+ host 协议 fuzz 台（ASan/UBSan，揪出 Bug
+      #16/#17）+ PVD 欠压黑匣子记录 + bootloader UART 跟踪（Bug #20 波特率
+      上板修正）+ 断电混沌测试台——**真板验收：HIL 全链路 8/8，混沌 8/8
+      （恢复 6.4~19.2s，断点覆盖传输中/END 后安装中/确认中），good2 异常
+      结案（Bug #19 上位机解析缺陷 + 复测不复现，证据归档）**
+- [ ] **P6** HIL CI：self-hosted runner 真板验收（`hil.yml` + `tools/hil_accept.py`，
+      流水线已就绪待挂 runner）
 - [ ] **P4** ESP-01 WiFi 传输通道（真·远程升级）——待硬件到位；
       传输层抽象已就位（协议解析与传输解耦，新增通道只需喂包给 OTA 核心状态机）
+
+### P5 工具链（全部可本地复现）
+
+```bash
+python3 tools/model_check.py              # 穷举断电模型检查（old 变体可复现 Bug #18）
+test/fuzz/run.sh 30                       # 协议 fuzz：ASan/UBSan + 4 组内建 oracle
+python3 tools/chaos_test.py --dry-run     # 断电混沌台自测；真板模式见 --help
+python3 tools/hil_accept.py --help        # HIL 真板验收（烧录→升级→回滚→黑匣子）
+```
 
 **v2 首次部署注意：** 新分区表与 v1 bootloader 不兼容——从 v1 设备升级到 v2 时，
 先跑上面的 `upload`（此时还是 v1 协议，安装的是 v2 App），随后**用 flash.sh 重烧一次
