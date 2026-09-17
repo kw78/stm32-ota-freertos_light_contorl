@@ -97,11 +97,15 @@ static uint8_t pkt_cmd, pkt_len, pkt_idx;
 static uint16_t pkt_seq = 0;                     // v2 包序号
 static uint8_t pkt_buf[PKT_DATA_MAX];     // 最多64字节一次
 static uint32_t pkt_start_tick = 0;       // 当前包第一个字节的时刻（超时重同步用）
+static uint8_t crc_hi, crc_byte_idx;      // CRC 字段接收进度（fuzz 台 O4 发现：
+                                          // 原为 case 块内 static，Pkt_Reset 够不着，
+                                          // 半包 CRC 超时后残留进度会错杀下一帧合法包）
 
 static void Pkt_Reset(void)
 {
     pkt_state = PKT_WAIT_HEADER;
     pkt_idx = 0;
+    crc_byte_idx = 0;
 }
 
 // 每收到一个字节调用一次，返回 1 表示收到完整包
@@ -152,7 +156,6 @@ static int Pkt_ParseByte(uint8_t byte)
         break;
     case PKT_WAIT_CRC:
         // 收到 2 字节 CRC16（高字节在前）
-        static uint8_t crc_hi, crc_byte_idx;
         if (crc_byte_idx == 0) {
             crc_hi = byte;            // 第 1 字节：CRC 高字节
             crc_byte_idx = 1;
@@ -200,7 +203,10 @@ static void OTA_SendBuf(const uint8_t *buf, uint16_t len)
 
 static void OTA_SendPacket(uint8_t cmd, const uint8_t *data, uint8_t len)
 {
-    uint8_t frame[4 + PKT_DATA_MAX + 2];
+    /* 满帧 = 1 头 + 1 cmd + 1 len + 2 seq + 64 data + 2 crc = 71B。
+     * 原来写成 4+64+2=70，len=64 时越界写 1 字节（fuzz 台 D6 发现，
+     * 现有响应均 ≤32B 未触发，属 Bug #11 同族的潜伏缺陷） */
+    uint8_t frame[7 + PKT_DATA_MAX];
     uint8_t n = 0;
     frame[n++] = PKT_HEADER;
     frame[n++] = cmd;
