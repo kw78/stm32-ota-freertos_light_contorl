@@ -139,7 +139,7 @@ static void __attribute__((naked)) jump_to_app(void){
         "ldr r1, [%0, #4]          \n"
         "msr MSP, r0               \n"
         "movw r2, #0xED08           \n"
-        "movt r2, #0xE000           \n"
+        "movt r2, #0xE000          \n"
         "str %0, [r2]              \n"
         "cpsie i                    \n"
         "bx r1                     \n"
@@ -149,6 +149,45 @@ static void __attribute__((naked)) jump_to_app(void){
     );
 }
 // debug得出
+
+/* ---- UART1 跟踪（寄存器级，无 HAL 依赖）----
+ * good2 调查引入：每次开机打印复位原因 / SPI ID / 升级决策摘要，
+ * 让"上电后设备到底做了什么"可从串口直接观测（预算 ~300B，闸门 8KB）。
+ * PA9 复用推挽，115200 @ PCLK2=72MHz。定义 BOOT_TRACE=0 可整体移除 */
+#define BOOT_TRACE 1
+#if BOOT_TRACE
+static void trace_init(void)
+{
+    RCC->APB2ENR |= RCC_APB2ENR_IOPAEN | RCC_APB2ENR_USART1EN;
+    GPIOA->CRH = (GPIOA->CRH & ~((uint32_t)0xFu << 4)) | (0xBu << 4); /* PA9 AF 推挽 50MHz */
+    USART1->BRR = 556u;      /* PCLK2=64MHz（HSI/2*16）→ BRR=64000000/115200≈556 */
+    USART1->CR1 = USART_CR1_UE | USART_CR1_TE;
+}
+static void trace_ch(char c)
+{
+    while (!(USART1->SR & USART_SR_TXE)) {}
+    USART1->DR = (uint8_t)c;
+}
+static void trace_puts(const char *s)
+{
+    while (*s) trace_ch(*s++);
+    while (!(USART1->SR & USART_SR_TC)) {}
+}
+static void trace_hex(uint32_t v)      /* 8 位十六进制，避免拉入 printf */
+{
+    for (int i = 28; i >= 0; i -= 4) {
+        static const char hx[] = "0123456789ABCDEF";
+        trace_ch(hx[(v >> i) & 0xF]);
+    }
+}
+#define TRACE(s)     trace_puts(s)
+#define TRACE_CH(c)  trace_ch(c)
+#define TRACE_HEX(v) trace_hex(v)
+#else
+#define TRACE(s)     ((void)0)
+#define TRACE_CH(c)  ((void)0)
+#define TRACE_HEX(v) ((void)0)
+#endif
 
 // 搬运固件，带回读校验，返回 0=成功, -1=写入失败, -2=回读校验失败, -3=擦除失败
 // 喂狗：IWDG 未启用时写 KR 是无害 no-op。上板实测发现 F1 的 IWDG 配置跨
@@ -252,21 +291,32 @@ int main(void)
 {
     // 第一件事读复位原因：IWDG 复位是"候选固件跑挂"的证据，用于回滚计数。
     // 用户按 NRST / 断电重启不算固件的错，不计入。
-    uint8_t reset_by_iwdg = ((RCC->CSR & RCC_CSR_IWDGRSTF) != 0) ? 1 : 0;
+    uint32_t reset_csr = RCC->CSR;
+    uint8_t reset_by_iwdg = ((reset_csr & RCC_CSR_IWDGRSTF) != 0) ? 1 : 0;
 
     HAL_Init();
     SystemClock_Config();
     my_MX_GPIO_Init();
     MX_SPI2_Init();
+#if BOOT_TRACE
+    trace_init();
+    TRACE("\r\nBT rst=");
+    TRACE_HEX(reset_csr);
+#endif
 
     // 验证 SPI Flash 是否可用
     uint32_t spi_id = W25_ReadID();
     if (spi_id == 0x000000 || spi_id == 0xFFFFFF) {
         // SPI Flash 不响应，直接跳转 App
+        TRACE(" noflash\r\n");
         SysTick->CTRL = 0;   // 关闭 Bootloader 的 SysTick，避免跳转后误触发
         jump_to_app();
         while(1) {}
     }
+#if BOOT_TRACE
+    TRACE(" id=");
+    TRACE_HEX(spi_id);
+#endif
 
     OTA_Flag_t flag;
     flag_read(&flag);
@@ -276,15 +326,27 @@ int main(void)
     // 只认 v2 契约的标志（v1 旧标志或杂数据一律视为无升级活动，直接跳 App；
     // 旧标志由 App 侧 supervisor 完成一次性迁移）
     if (flag.magic == OTA_FLAG_MAGIC && flag.ver == OTA_FLAG_VER) {
+        TRACE(" st=");
+        TRACE_CH('0' + flag.state);
+        TRACE_CH('0' + flag.golden_valid);
+        TRACE(" ry=");
+        TRACE_HEX(flag.retry_cnt);
         if (flag.state == OTA_STATE_PENDING) {
-            if (slot_verify(OTA_HDR_A_ADDR, OTA_FW_ADDR, &size)) {
+            int vA = slot_verify(OTA_HDR_A_ADDR, OTA_FW_ADDR, &size);
+            TRACE(" vA=");
+            TRACE_CH('0' + vA);
+            if (vA) {
                 // 暂存镜像有效：搬运到内部 Flash，进入 TESTING 等 App 确认
-                if (copy_firmware(OTA_FW_ADDR, APP_START_ADDR, size) == 0) {
+                int cp = copy_firmware(OTA_FW_ADDR, APP_START_ADDR, size);
+                TRACE(" cp=");
+                TRACE_HEX((uint32_t)cp);
+                if (cp == 0) {
                     flag.state = OTA_STATE_TESTING;
                     flag.retry_cnt = 0;
                 } else if (flag.golden_valid &&
                            slot_verify(OTA_HDR_B_ADDR, OTA_GOLDEN_ADDR, &size)) {
                     // 搬运失败（内部 Flash 写入异常）：退回金固件
+                    TRACE(" rbg");
                     copy_firmware(OTA_GOLDEN_ADDR, APP_START_ADDR, size);
                     flag.state = OTA_STATE_IDLE;
                     flag.retry_cnt = 0;
@@ -299,17 +361,25 @@ int main(void)
                 // 有金固件则顺带回滚，让设备回到已知良好状态
                 if (flag.golden_valid &&
                     slot_verify(OTA_HDR_B_ADDR, OTA_GOLDEN_ADDR, &size)) {
+                    TRACE(" badA>rbg");
                     copy_firmware(OTA_GOLDEN_ADDR, APP_START_ADDR, size);
                 }
                 flag.state = OTA_STATE_IDLE;
                 flag.retry_cnt = 0;
                 flag_dirty = 1;
             }
-        } else if (flag.state == OTA_STATE_TESTING && reset_by_iwdg) {
-            // 候选固件看门狗复位：计数，超限回滚
-            if (flag.retry_cnt < 0xFFFF) flag.retry_cnt++;
+        } else if (flag.state == OTA_STATE_TESTING &&
+                   (reset_by_iwdg || flag.retry_cnt > OTA_ROLLBACK_LIMIT)) {
+            // 候选固件看门狗复位：计数，超限回滚。
+            // 条件不再只认 IWDG 复位原因：retry_cnt 已超限说明此前已有 4 次
+            // 看门狗复位认定固件不可靠，若上次回滚搬运途中断电（POR 会清掉
+            // IWDG 配置和复位原因标志），只认 IWDG 会在下次开机直接跳进
+            // 半擦除的内部 Flash 并永久挂死——模型检查 S3 场景，见
+            // tools/model_check.py
+            if (reset_by_iwdg && flag.retry_cnt < 0xFFFF) flag.retry_cnt++;
             if (flag.retry_cnt > OTA_ROLLBACK_LIMIT && flag.golden_valid &&
                 slot_verify(OTA_HDR_B_ADDR, OTA_GOLDEN_ADDR, &size)) {
+                TRACE(" tw>rbg");
                 copy_firmware(OTA_GOLDEN_ADDR, APP_START_ADDR, size);
                 flag.state = OTA_STATE_IDLE;
                 flag.retry_cnt = 0;
@@ -322,6 +392,7 @@ int main(void)
         if (flag_dirty) flag_write(&flag);
     }
 
+    TRACE(" jmp\r\n");
     SysTick->CTRL = 0;   // 关闭 Bootloader 的 SysTick，避免跳转后误触发
     jump_to_app();
     while(1) {}
