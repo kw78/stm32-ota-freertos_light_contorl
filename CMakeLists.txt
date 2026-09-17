@@ -66,6 +66,11 @@ execute_process(
 if(NOT GIT_RESULT EQUAL 0 OR GIT_HASH STREQUAL "")
     set(GIT_HASH "deadbeef")
 endif()
+# 验收测试镜像可用环境变量覆盖版本号（如 APP_VERSION_OVERRIDE=badf0001），
+# 便于 QUERY/黑匣子里一眼区分坏固件
+if(DEFINED ENV{APP_VERSION_OVERRIDE})
+    set(GIT_HASH "$ENV{APP_VERSION_OVERRIDE}")
+endif()
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     APP_VERSION=0x${GIT_HASH}
 )

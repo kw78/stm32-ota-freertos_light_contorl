@@ -313,6 +313,16 @@ int main(void)
         spi_id, flag[0], flag[1], flag[2], flag[3]);
     HAL_UART_Transmit(&huart1, (uint8_t *)id_buf, (uint16_t)id_n, 100);
   }
+
+#ifdef BAD_FW_TEST
+  /* 回滚验收专用镜像（BAD_FW_TEST 构建）：banner 打完立即写空指针 HardFault。
+   * 预期行为：崩溃现场进 noinit 邮箱 → 关中断等 IWDG(26s) → Bootloader
+   * 计数 >3 → 自动回滚金固件，设备恢复已知良好版本 */
+  {
+    volatile uint32_t *null_ptr = (volatile uint32_t *)0x00000000;
+    *null_ptr = 0xDEADBEEF;
+  }
+#endif
   /* USER CODE BEGIN 2 */
   OLED_Init();
   OLED_ShowString(0, 0, "Light Monitor");
