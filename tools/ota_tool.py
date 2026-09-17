@@ -111,7 +111,10 @@ def wait_ack(ser: serial.Serial, timeout: float) -> bool:
     dbg = b''
     while time.time() < deadline:
         if ser.in_waiting > 0:
-            b = ser.read(1)[0]
+            r = ser.read(1)
+            if not r:                     # 竞态下 in_waiting 可能虚报，read 返回空
+                continue
+            b = r[0]
             if b == ACK:
                 if dbg:
                     print(f"  [设备] {dbg.decode(errors='replace').strip()}")
