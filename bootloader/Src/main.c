@@ -1,11 +1,13 @@
 #include "stm32f1xx_hal.h"
 #include "w25d64.h"
 #include "ota.h"
+#include "sha256.h"
+#include "ota_key.h"
 #include <string.h>
 
 SPI_HandleTypeDef hspi2;
 
-#define APP_START_ADDR 0x08002000
+#define APP_START_ADDR 0x08002800   /* v3：bootloader 区 8K→10K（信任链），App 后移 */
 
 void SysTick_Handler(void) { HAL_IncTick(); }
 
@@ -256,14 +258,25 @@ static void flag_write(const OTA_Flag_t *f)
     W25_WritePage(OTA_FLAG_ADDR, (const uint8_t *)f, sizeof(*f));
 }
 
-// 校验一个槽位：镜像头合法 + 固件 CRC32 匹配 + 栈顶在 RAM 范围内。
+// 校验一个槽位（v3 信任链）：镜像头合法 + 防降级 + CRC32 + HMAC 签名
+// + 栈顶在 RAM 范围内。CRC 与 HMAC 一遍流式过（少读一整轮 43KB）。
 // 返回 1 可用；size_out 可为 NULL
-static int slot_verify(uint32_t hdr_addr, uint32_t data_addr, uint32_t *size_out)
+static int slot_verify(uint32_t hdr_addr, uint32_t data_addr,
+                       uint32_t min_build, uint32_t *size_out)
 {
     OTA_ImageHdr_t hdr;
     W25_Read(hdr_addr, (uint8_t *)&hdr, sizeof(hdr));
     if (hdr.magic != OTA_IMG_MAGIC || hdr.size == 0 || hdr.size > OTA_FW_MAX_SIZE)
         return 0;
+    if (hdr.build_ts < min_build)          // 防降级：签名合法也不允许装旧版
+        return 0;
+
+    uint8_t key[OTA_HMAC_KEY_LEN];
+    if (!ota_hmac_key_from_hex(OTA_HMAC_KEY_HEX, key, sizeof(key)))
+        return 0;
+    HmacSha256 hm;
+    hmac_sha256_begin(&hm, key, sizeof(key));
+    sha256_update(&hm.inner, (const uint8_t *)&hdr, 20);   // 头前 20B 入 HMAC
 
     uint8_t buf[256];
     uint32_t pos = 0;
@@ -272,9 +285,15 @@ static int slot_verify(uint32_t hdr_addr, uint32_t data_addr, uint32_t *size_out
         uint32_t chunk = (hdr.size - pos > 256) ? 256 : (hdr.size - pos);
         W25_Read(data_addr + pos, buf, chunk);
         crc = crc32_update(crc, buf, chunk);
+        sha256_update(&hm.inner, buf, chunk);
         pos += chunk;
     }
     if ((~crc) != hdr.crc32)
+        return 0;
+
+    uint8_t mac[32];
+    hmac_sha256_end(&hm, mac);
+    if (memcmp(mac, hdr.hmac, 16) != 0)    // 签名不符 → 视为无效镜像
         return 0;
 
     // 合法性检查：栈顶地址必须在 RAM 范围内
@@ -325,14 +344,15 @@ int main(void)
 
     // 只认 v2 契约的标志（v1 旧标志或杂数据一律视为无升级活动，直接跳 App；
     // 旧标志由 App 侧 supervisor 完成一次性迁移）
-    if (flag.magic == OTA_FLAG_MAGIC && flag.ver == OTA_FLAG_VER) {
+    if (flag.magic == OTA_FLAG_MAGIC && flag.ver == OTA_FLAG_VER) { /* v3：ver=3 */
         TRACE(" st=");
         TRACE_CH('0' + flag.state);
         TRACE_CH('0' + flag.golden_valid);
         TRACE(" ry=");
         TRACE_HEX(flag.retry_cnt);
         if (flag.state == OTA_STATE_PENDING) {
-            int vA = slot_verify(OTA_HDR_A_ADDR, OTA_FW_ADDR, &size);
+            int vA = slot_verify(OTA_HDR_A_ADDR, OTA_FW_ADDR,
+                                 flag.min_build, &size);
             TRACE(" vA=");
             TRACE_CH('0' + vA);
             if (vA) {
@@ -344,7 +364,8 @@ int main(void)
                     flag.state = OTA_STATE_TESTING;
                     flag.retry_cnt = 0;
                 } else if (flag.golden_valid &&
-                           slot_verify(OTA_HDR_B_ADDR, OTA_GOLDEN_ADDR, &size)) {
+                           slot_verify(OTA_HDR_B_ADDR, OTA_GOLDEN_ADDR,
+                                       flag.min_build, &size)) {
                     // 搬运失败（内部 Flash 写入异常）：退回金固件
                     TRACE(" rbg");
                     copy_firmware(OTA_GOLDEN_ADDR, APP_START_ADDR, size);
@@ -360,7 +381,8 @@ int main(void)
                 // 暂存镜像损坏：不动内部 Flash，当前 App 原样运行；
                 // 有金固件则顺带回滚，让设备回到已知良好状态
                 if (flag.golden_valid &&
-                    slot_verify(OTA_HDR_B_ADDR, OTA_GOLDEN_ADDR, &size)) {
+                    slot_verify(OTA_HDR_B_ADDR, OTA_GOLDEN_ADDR,
+                                flag.min_build, &size)) {
                     TRACE(" badA>rbg");
                     copy_firmware(OTA_GOLDEN_ADDR, APP_START_ADDR, size);
                 }
@@ -378,7 +400,8 @@ int main(void)
             // tools/model_check.py
             if (reset_by_iwdg && flag.retry_cnt < 0xFFFF) flag.retry_cnt++;
             if (flag.retry_cnt > OTA_ROLLBACK_LIMIT && flag.golden_valid &&
-                slot_verify(OTA_HDR_B_ADDR, OTA_GOLDEN_ADDR, &size)) {
+                slot_verify(OTA_HDR_B_ADDR, OTA_GOLDEN_ADDR,
+                            flag.min_build, &size)) {
                 TRACE(" tw>rbg");
                 copy_firmware(OTA_GOLDEN_ADDR, APP_START_ADDR, size);
                 flag.state = OTA_STATE_IDLE;
@@ -390,6 +413,22 @@ int main(void)
         // 复位原因标志保留给 App 侧 supervisor（转录黑匣子后由它清除）：
         // App 每次开机都清标志，本 bootloader 开头读到的永远是"本次复位"的原因
         if (flag_dirty) flag_write(&flag);
+    }
+
+    /* TESTING 候选固件的看门狗兜底（Bug #21，上板发现）：
+     * 回滚机制原依赖"候选固件 main 第一行自己武装 IWDG"，但被破坏/错基址的
+     * 镜像可能既不武装也不 HardFault，而是安静挂死——retry 永不增长，回滚
+     * 失效，只能 SWD 救。现在由 Bootloader 在跳入候选前武装 26s 长窗：
+     * 正常固件毫秒级由 supervisor 接管喂狗；挂死候选 26s 内必被咬 →
+     * IWDG 复位 → retry++ → 超限回滚金固件。IDLE 跳转不武装（用户复位
+     * 不计入回滚计数的语义保持不变）。 */
+    if (flag.magic == OTA_FLAG_MAGIC && flag.ver == OTA_FLAG_VER &&
+        flag.state == OTA_STATE_TESTING) {
+        IWDG->KR  = 0x5555u;         // 解锁 PR/RLR
+        IWDG->PR  = 6u;              // LSI/256（与 App 侧一致）
+        IWDG->RLR = 4095u;           // ~26s 长窗，覆盖候选最慢启动
+        IWDG->KR  = 0xAAAAu;         // 先重载再启动
+        IWDG->KR  = 0xCCCCu;         // 启动（已启动时为无害重复使能）
     }
 
     TRACE(" jmp\r\n");
