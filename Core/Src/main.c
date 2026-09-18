@@ -88,12 +88,21 @@ uint16_t adc_buf[ADC_BUF_SIZE];
 
 volatile LightState_t state_now = STATE_DARK;
 
+/* 光照状态机：四态各自带迟滞，任一对相邻状态的死区都是"外宽内窄"——
+ * 离开某状态要越过更远的边界，重进才允许靠近边界，从根上杜绝边界抖动。
+ *   进入 GLARE 需 <800，回到 IDEAL 需 >1000   → 死区 [800,1000]
+ *   离开 IDEAL 向上需 >1600（DIM_DOWN），DIM 回 IDEAL 需 <1200（IDEAL_UP）
+ *   离开 DARK 需 <2800（DARK_EXIT），回 DARK 需 >3000（DIM_UP）
+ * 修复记录见 BUGS.md #22：原 IDEAL↔GLARE 这对阈值接反（进 GLARE <1000、
+ * 出 GLARE >800），(800,1000) 区间双向条件同时成立 → 状态无限来回跳 */
 void LightState_Update(uint16_t adc_value)
 {
     static LightState_t state_target = STATE_DARK;
     static uint8_t first_flag = 0;
+    static uint8_t change = 0;
     if (first_flag == 0)
     {
+        /* 首次采样按纯区域边界定性（无历史可依，不存在迟滞语义） */
         if (adc_value >= DARK_EXIT)
             state_target = state_now = STATE_DARK;
         else if (adc_value >= DIM_DOWN)
@@ -104,6 +113,10 @@ void LightState_Update(uint16_t adc_value)
             state_target = state_now = STATE_GLARE;
         first_flag++;
     }
+    /* 每次评估都先收回当前状态：只有条件持续命中才会指向新状态。
+     * 原实现让 state_target 粘住上一次的瞬态目标——条件早已不成立，
+     * 去抖计数却仍在累加，单次噪声尖峰 10 拍后也能推翻状态（BUGS.md #22） */
+    state_target = state_now;
     switch (state_now)
     {
     case STATE_DARK:
@@ -117,29 +130,24 @@ void LightState_Update(uint16_t adc_value)
             state_target = STATE_IDEAL;
         break;
     case STATE_IDEAL:
-        if (adc_value < IDEAL_DOWN)
+        if (adc_value < GLARE_EXIT)          /* <800 才算真眩光（原误用 IDEAL_DOWN=1000） */
             state_target = STATE_GLARE;
         else if (adc_value > DIM_DOWN)
             state_target = STATE_DIM;
         break;
     case STATE_GLARE:
-        if (adc_value > GLARE_EXIT)
+        if (adc_value > IDEAL_DOWN)          /* >1000 才回到 IDEAL（原误用 GLARE_EXIT=800） */
             state_target = STATE_IDEAL;
         break;
     }
-    static uint8_t change = 0;
     if (state_target == state_now)
         change = 0;
+    else if (change < DEBOUNCE_COUNT)
+        change++;
     else
     {
-        if (change < DEBOUNCE_COUNT)
-            change++;
-        else
-        {
-            state_now = state_target;
-            state_target = state_now;
-            change = 0;
-        }
+        state_now = state_target;
+        change = 0;
     }
 }
 
