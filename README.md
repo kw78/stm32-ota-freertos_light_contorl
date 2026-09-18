@@ -348,7 +348,21 @@ python3 tools/model_check.py              # 穷举断电模型检查（old 变�
 test/fuzz/run.sh 30                       # 协议 fuzz：ASan/UBSan + 4 组内建 oracle
 python3 tools/chaos_test.py --dry-run     # 断电混沌台自测；真板模式见 --help
 python3 tools/hil_accept.py --help        # HIL 真板验收（烧录→升级→回滚→黑匣子）
+python3 tools/check_hysteresis.py         # 光照状态机迟滞规则守护（Bug #22 类缺陷免疫）
 ```
+
+### 开发环境备忘（WSL2，踩过的坑）
+
+- **USB 直通**：串口 CH340 / ST-Link 经 usbipd（busid 5-2 / 5-1）。掉线症状
+  （`/dev/ttyUSB0` 消失、openocd `open failed`）恢复：
+  `usbipd.exe attach --wsl --busid 5-2 && usbipd.exe attach --wsl --busid 5-1`
+- **Python 环境**：pyserial 装在 conda env `ota`，工具统一用
+  `/home/kaiwen/miniconda3/envs/ota/bin/python tools/ota_tool.py ...`
+- **串口单进程纪律**：任何时刻只允许一个进程持有 `/dev/ttyUSB0`（双读会丢字节，
+  OTA 与黑匣子扫描都不允许多开）
+- **openocd halt 必须 < 3s**：App 运行期 IWDG 窗口 8s，halt 停 CPU 不停 IWDG
+- **push（22 端口不稳，走 443）**：
+  `GIT_SSH_COMMAND="ssh -o BatchMode=yes -p 443" git push ssh://git@ssh.github.com:443/kw78/stm32-ota-freertos_light_contorl.git <branch>`
 
 **v2 首次部署注意：** 新分区表与 v1 bootloader 不兼容——从 v1 设备升级到 v2 时，
 先跑上面的 `upload`（此时还是 v1 协议，安装的是 v2 App），随后**用 flash.sh 重烧一次
