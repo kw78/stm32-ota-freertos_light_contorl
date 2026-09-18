@@ -51,6 +51,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # 共享的
     ${PARENT_DIR}/Core/Src/w25d64.c
     ${PARENT_DIR}/Core/Src/ota.c
+    ${PARENT_DIR}/Core/Src/sha256.c
     ${PARENT_DIR}/Core/Src/system_stm32f1xx.c
     ${PARENT_DIR}/Core/Src/stm32f1xx_hal_msp.c
     ${PARENT_DIR}/startup_stm32f103xb.s

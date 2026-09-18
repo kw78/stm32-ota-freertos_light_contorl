@@ -142,7 +142,7 @@ static void flag_commit(OTA_Flag_t *f)
     memcpy(&g_ota_flag_cache, f, sizeof(*f));
 }
 
-/* 启动时加载控制块：v2 直接用；v1 旧标志或杂数据 → 一次性迁移为干净的 v2 IDLE */
+/* 启动时加载控制块：v3 直接用；v2/v1 旧标志或杂数据 → 一次性迁移为 v3 IDLE */
 static void flag_boot_init(void)
 {
     OTA_Flag_t f;
@@ -153,12 +153,15 @@ static void flag_boot_init(void)
         return;
     }
 
-    /* v1 旧标志（'OTA1'）或擦除态/损坏数据：全部归一化为 v2 IDLE。
-     * 注：v1 bootloader 看到 v2 magic 会直接跳过升级逻辑，双方向兼容 */
+    /* v2/v1 旧标志（'OTA1'/'OTA2'-v2）或擦除态/损坏数据：归一化为 v3 IDLE。
+     * golden_valid 必须清零：旧金固件是未签名的 IMG2 头，v3 Bootloader 的
+     * slot_verify（HMAC 门）不可能通过它——诚实降级，待首次签名升级后重建。
+     * min_build 从 0 起步（无历史地板）。 */
     memset(&f, 0, sizeof(f));
     f.magic = OTA_FLAG_MAGIC;
     f.ver   = OTA_FLAG_VER;
     f.state = OTA_STATE_IDLE;
+    f.min_build = 0;
     flag_commit(&f);
 }
 
@@ -337,10 +340,13 @@ void StartTaskSupervisor(void *argument)
 
             if (ret == 0) {
                 OTA_Flag_t f;
+                OTA_ImageHdr_t hdrA;
+                W25_Read(OTA_HDR_A_ADDR, (uint8_t *)&hdrA, sizeof(hdrA));
                 memcpy(&f, &g_ota_flag_cache, sizeof(f));
                 f.state = OTA_STATE_IDLE;
                 f.golden_valid = 1;
                 f.retry_cnt = 0;
+                f.min_build = hdrA.build_ts;   // 防降级地板 = 已确认镜像的 build_ts
                 flag_commit(&f);
                 confirmed = 1;
                 char msg[48];

@@ -20,6 +20,13 @@
  *    PENDING --(bootloader 校验+搬运成功)--> TESTING
  *    TESTING --(App 10s 健康自检通过，备份金固件)--> IDLE
  *    TESTING --(连续 4 次 IWDG 复位)--> 回滚槽 B --> IDLE
+ *
+ *  v3 信任链（P7，镜像真实 + 防降级）：
+ *    - 镜像头携带 build_ts（单调构建时间戳）+ HMAC-SHA256-128 签名
+ *    - HMAC 覆盖：镜像头前 20B（magic..build_ts）+ 固件全部字节
+ *    - 防降级：flag.min_build = 最近已确认镜像的 build_ts，
+ *      Bootloader/App 双侧拒绝更旧的镜像（即使签名合法）
+ *    - 内部 Flash 分区变更：Bootloader 10KB，App @0x08002800 52KB
  * =====================================================================
  */
 
@@ -36,7 +43,7 @@
 /* ---- 控制块（flag）---- */
 #define OTA_FLAG_MAGIC      0x4F544132U  /* 'OTA2' */
 #define OTA_FLAG_MAGIC_V1   0x4F544131U  /* 'OTA1' 旧版标志，仅用于一次性迁移识别 */
-#define OTA_FLAG_VER        2
+#define OTA_FLAG_VER        3
 
 #define OTA_STATE_IDLE      0x00        /* 无升级活动 */
 #define OTA_STATE_PENDING   0x01        /* 槽 A 有完整固件，等待 Bootloader 搬运 */
@@ -51,17 +58,20 @@ typedef struct {
     uint8_t  golden_valid;              /* 槽 B 金固件是否可用 */
     uint16_t retry_cnt;                 /* TESTING 期间 IWDG 复位计数 */
     uint16_t reserved;
-} OTA_Flag_t;                           /* 固定 12 字节（4KB 扇区内单页写） */
+    uint32_t min_build;                 /* 防降级地板：已确认镜像的 build_ts */
+} OTA_Flag_t;                           /* 16 字节（4KB 扇区内单页写） */
 
 /* ---- 镜像头（每个槽一个，描述槽内固件）---- */
-#define OTA_IMG_MAGIC       0x32474D49U  /* 'IMG2'（小端读出） */
+#define OTA_IMG_MAGIC       0x33474D49U  /* 'IMG3'（小端读出）——v3 起需签名 */
 
 typedef struct {
     uint32_t magic;                     /* OTA_IMG_MAGIC */
     uint32_t version;                   /* 构建版本（git short hash） */
     uint32_t size;                      /* 固件字节数 */
     uint32_t crc32;                     /* 固件 CRC32（与上位机 binascii.crc32 一致） */
-} OTA_ImageHdr_t;                       /* 16 字节 */
+    uint32_t build_ts;                  /* 单调构建时间戳（防降级计数） */
+    uint8_t  hmac[16];                  /* HMAC-SHA256-128（头前 20B + 固件） */
+} OTA_ImageHdr_t;                       /* 36 字节 */
 
 /* ---- 上位机协议 v2 ----
  * 帧: | 0xAA | CMD | LEN | SEQ_LO | SEQ_HI | DATA(LEN) | CRC16_HI | CRC16_LO |
@@ -70,7 +80,8 @@ typedef struct {
  * v1 帧无 SEQ 字段；ota_tool.py 会先 QUERY 探测，老固件无响应则自动降级 v1。
  */
 #define PKT_HEADER          0xAA
-#define CMD_OTA_START       0x01        /* DATA: fw_size(4) crc32(4) version(4)，共 12B */
+#define CMD_OTA_START       0x01        /* DATA(v3): fw_size(4) crc32(4) version(4)
+                                           build_ts(4) hmac(16)，共 32B（v3 固件强制） */
 #define CMD_OTA_DATA        0x02        /* DATA: ≤64B 固件数据，SEQ = 偏移/64 */
 #define CMD_OTA_END         0x03        /* DATA: 无 */
 #define CMD_QUERY           0x10        /* DATA: 无；响应 12B 状态（见下） */

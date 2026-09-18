@@ -49,6 +49,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/MPU6050.c
     Core/Src/w25d64.c
     Core/Src/ota.c
+    Core/Src/sha256.c
     Core/Src/supervisor.c
     Core/Src/blackbox.c
     Core/Src/light_ctrl.c

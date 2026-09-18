@@ -1,5 +1,7 @@
 #include "ota.h"
 #include "w25d64.h"
+#include "sha256.h"
+#include "ota_key.h"
 #include "blackbox.h"
 #include "light_ctrl.h"
 #include "supervisor.h"
@@ -189,6 +191,8 @@ static int Pkt_ParseByte(uint8_t byte)
 static uint32_t ota_fw_size = 0;        // 固件总大小（START 时记录）
 static uint32_t ota_fw_crc32 = 0;       // 固件 CRC32（START 时记录）
 static uint32_t ota_fw_version = 0;     // 固件版本（START 时记录）
+static uint32_t ota_fw_build_ts = 0;    // v3：单调构建时间戳（防降级计数）
+static uint8_t  ota_fw_hmac[16] = {0};  // v3：镜像 HMAC-SHA256-128 签名
 static uint32_t ota_bytes_written = 0;  // 已写入字节数（DATA 时递增）
 
 static void OTA_SendByte(uint8_t b)
@@ -226,15 +230,25 @@ static void OTA_HandlePacket(uint8_t cmd, const uint8_t *data, uint8_t len)
 {
     switch (cmd) {
     case CMD_OTA_START:
-        if (len < 12) { OTA_SendByte(nack); break; }
+        // v3：START 载荷扩为 32B（+build_ts+hmac），旧格式 12B 一律拒绝——
+        // 未签名镜像从会话源头挡掉（END 还有二次 HMAC 校验，双保险）
+        if (len < 32) { OTA_SendByte(nack); break; }
         if (g_ota_backup_busy) { OTA_SendByte(nack); break; }   // 金固件备份中
 
         memcpy(&ota_fw_size, data, 4);
         memcpy(&ota_fw_crc32, data + 4, 4);
         memcpy(&ota_fw_version, data + 8, 4);
+        memcpy(&ota_fw_build_ts, data + 12, 4);
+        memcpy(ota_fw_hmac, data + 16, 16);
 
         // 大小必须合法：异常值会让擦除循环越界擦掉其他分区
         if (ota_fw_size == 0 || ota_fw_size > OTA_FW_MAX_SIZE) {
+            ota_fw_size = 0;
+            OTA_SendByte(nack);
+            break;
+        }
+        // 防降级早拒：比已确认地板旧的镜像直接 NACK（省一整轮上传）
+        if (ota_fw_build_ts < g_ota_flag_cache.min_build) {
             ota_fw_size = 0;
             OTA_SendByte(nack);
             break;
@@ -311,7 +325,21 @@ static void OTA_HandlePacket(uint8_t cmd, const uint8_t *data, uint8_t len)
         }
         g_ota_session_active = 0;
 
-        // 回读固件，分段计算 CRC32
+        // 回读固件，CRC32 与 HMAC 签名一遍流式同过（省一整轮 43KB 读）
+        OTA_ImageHdr_t hdr = {
+            .magic    = OTA_IMG_MAGIC,
+            .version  = ota_fw_version,
+            .size     = ota_fw_size,
+            .crc32    = ota_fw_crc32,
+            .build_ts = ota_fw_build_ts,
+        };
+        uint8_t key[OTA_HMAC_KEY_LEN];
+        uint8_t key_ok = ota_hmac_key_from_hex(OTA_HMAC_KEY_HEX, key, sizeof(key));
+        HmacSha256 hm;
+        if (key_ok) {
+            hmac_sha256_begin(&hm, key, sizeof(key));
+            sha256_update(&hm.inner, (const uint8_t *)&hdr, 20);  // 头前 20B 入签名
+        }
         uint8_t read_buf[256];
         uint32_t pos = 0;
         uint32_t calc_crc = 0xFFFFFFFF;
@@ -319,22 +347,25 @@ static void OTA_HandlePacket(uint8_t cmd, const uint8_t *data, uint8_t len)
             uint32_t chunk = (ota_fw_size - pos > 256) ? 256 : (ota_fw_size - pos);
             W25_Read(OTA_FW_ADDR + pos, read_buf, chunk);
             calc_crc = crc32_update(calc_crc, read_buf, chunk);  // 分段累加
+            if (key_ok) sha256_update(&hm.inner, read_buf, chunk);
             pos += chunk;
         }
         calc_crc = ~calc_crc;   // 最终取反
 
-        if (calc_crc != ota_fw_crc32) {
+        if (calc_crc != ota_fw_crc32 || !key_ok) {
             OTA_SendByte(nack);
             break;
         }
+        uint8_t mac[32];
+        hmac_sha256_end(&hm, mac);
+        if (memcmp(mac, ota_fw_hmac, 16) != 0) {
+            // 签名不符：拒绝安装（防未签名/篡改镜像，与 Bootloader 双保险）
+            OTA_SendByte(nack);
+            break;
+        }
+        memcpy(hdr.hmac, ota_fw_hmac, 16);
 
-        // 校验通过：写槽 A 镜像头 + 控制块置 PENDING（保留 golden_valid）
-        OTA_ImageHdr_t hdr = {
-            .magic   = OTA_IMG_MAGIC,
-            .version = ota_fw_version,
-            .size    = ota_fw_size,
-            .crc32   = ota_fw_crc32,
-        };
+        // 校验通过：写槽 A 镜像头 + 控制块置 PENDING（保留 golden_valid/min_build）
         W25_EraseSector(OTA_HDR_A_ADDR);
         W25_WritePage(OTA_HDR_A_ADDR, (const uint8_t *)&hdr, sizeof(hdr));
 
