@@ -43,6 +43,9 @@ jobs:
       - name: Model check (bootloader power-cut exhaustive)
         run: python3 tools/model_check.py
 
+      - name: Hysteresis design rule (light state machine thresholds)
+        run: python3 tools/check_hysteresis.py
+
       - name: Protocol fuzz (host, ASan/UBSan, 30s)
         run: test/fuzz/run.sh 30
 
