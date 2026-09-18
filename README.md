@@ -272,9 +272,9 @@ SPI Flash 环形日志区 ──CMD_GET_LOG──▶ ota_tool.py log（现场取
 
 | 区域 | 大小 | 已用 | 占比 |
 |------|------|------|------|
-| Flash (App) | 54KB | 43KB | 79.2% |
-| Flash (Bootloader) | 8KB | 7.6KB | 94.6% |
-| RAM | 20KB | 16.2KB | 81.0% |
+| Flash (App) | 52KB | 44.5KB | 85.5% |
+| Flash (Bootloader) | 10KB | 9.0KB | 89.7% |
+| RAM | 20KB | 16.2KB | 81.1% |
 
 ---
 
@@ -292,7 +292,7 @@ openocd -f interface/stlink.cfg -f target/stm32f1x.cfg \
   -c "init; reset halt" \
   -c "flash erase_address 0x08000000 0x10000" \
   -c "flash write_image /tmp/boot.bin 0x08000000 bin" \
-  -c "flash write_image /tmp/app.bin 0x08002000 bin" \
+  -c "flash write_image /tmp/app.bin 0x08002800 bin" \
   -c "reset run; shutdown"
 
 # OTA 上传（v2 设备；对 v1 老固件自动降级协商，一条命令完成换代）
@@ -319,6 +319,25 @@ sudo python3 tools/ota_tool.py dim /dev/ttyUSB0 on --target 1100
       结案（Bug #19 上位机解析缺陷 + 复测不复现，证据归档）**
 - [ ] **P6** HIL CI：self-hosted runner 真板验收（`hil.yml` + `tools/hil_accept.py`，
       流水线已就绪待挂 runner）
+- [x] **P7** 信任链：HMAC-SHA256-128 镜像签名 + build_ts 防降级
+      （v3 契约：bootloader 10KB、App @0x08002800、IMG3 镜像头、flag.min_build；
+      App END 与 Bootloader slot_verify 双侧校验、密钥可注入、官方向量 CI 关卡；
+      **真板 HIL 9/9**：签名安装/坏固件回滚/旧版本被拒/黑匣子取证全过；
+      顺带发现并修复 Bug #21——bootloader 现为 TESTING 候选兜底武装看门狗，
+      "安静挂死"型坏镜像也能触发回滚）
+
+### 信任链与威胁模型（P7）
+
+- **机制**：上位机对"镜像头前 20B + 固件"做 HMAC-SHA256 并截断 16B 随 START
+  下发；App 在 END 提交前、Bootloader 在安装/回滚校验时各验一次（双保险）；
+  防降级地板 `flag.min_build` 随每次确认启动抬升，更旧的镜像（即使签名合法）
+  在 START 早拒 + Bootloader 二次拦截
+- **密钥**：默认内嵌公开开发密钥（开箱即用零防护）；`ota_tool.py genkey` +
+  `cmake -DOTA_HMAC_KEY_HEX=...` 注入真实密钥（密钥文件 gitignore）
+- **防得住**：OTA 通道上的未签名/篡改镜像、版本回滚攻击（含伪造金固件槽）
+- **防不住**：物理提取（SWD 开放，对称密钥可读出）、上位机自身被攻陷
+  （对称密钥即签名能力）——要防后者需非对称签名（Ed25519 一类，
+  64KB 预算内代价过高，见"反目标"）
 - [ ] **P4** ESP-01 WiFi 传输通道（真·远程升级）——待硬件到位；
       传输层抽象已就位（协议解析与传输解耦，新增通道只需喂包给 OTA 核心状态机）
 

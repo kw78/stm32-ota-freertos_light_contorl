@@ -83,6 +83,15 @@
 - [ ] README/BUGS.md 同步最终结论；HANDOFF 本文件删除
 - [ ] 合并 feat/ota-v2 → master（用户决定时机）
 
+## P7 信任链已完成（2026-09-18，v3 契约）
+
+- v3 分区：bootloader 10KB（9184B，含 SHA256/HMAC + BT 跟踪 + IWDG 兜底）、
+  App @0x08002800（45516B/52KB）——**烧录地址已变**，README 命令已更新
+- 真板 HIL 9/9：签名上传安装 / 坏固件回滚（Bug #21 兜底生效）/ 防降级旧
+  ts 被拒 / 黑匣子 REC_FAULT。混沌 3 轮见 /tmp/chaos_v3.csv
+- 操作教训两条已固化进工具：HIL 前镜像基址体检（stale bin 直接拒绝）；
+  badfw 镜像必须与当前链接器同源构建
+
 ## 环境备忘
 
 - 串口 `/dev/ttyUSB0` = CH340（usbipd busid **5-2**），ST-Link = busid **5-1**；掉线时：
