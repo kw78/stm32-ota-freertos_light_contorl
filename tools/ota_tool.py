@@ -19,6 +19,9 @@ from __future__ import annotations
 
 import argparse
 import binascii
+import hashlib
+import hmac as hmac_mod
+import os
 import struct
 import sys
 import time
@@ -46,6 +49,30 @@ NACK = 0x15
 CHUNK_SIZE    = 64
 FW_MAX_SIZE   = 56 * 1024
 DATA_RETRY    = 3           # v2 单包最大重试次数（v1 无 SEQ 去重，不重试）
+
+# ---- v3 信任链：镜像签名（HMAC-SHA256-128）----
+IMG_MAGIC      = 0x33474D49                       # 'IMG3'，与 ota.h 一致
+# 默认 = 固件内嵌的公开开发密钥（Core/Inc/ota_key.h）——开箱即用，不提供真实防护
+DEFAULT_KEY_HEX = "676363746573742d70372d686d61632d6465762d6b6579232323232323232323"
+
+
+def load_key(path: str | None = None, hexstr: str | None = None) -> bytes:
+    if path:
+        k = open(path, 'rb').read()
+        if len(k) != 32:
+            raise SystemExit(f"错误: 密钥文件须为 32 字节（当前 {len(k)}）")
+        return k
+    return bytes.fromhex(hexstr or DEFAULT_KEY_HEX)
+
+
+def start_payload(fw: bytes, version: int, build_ts: int, key: bytes) -> bytes:
+    """v3 START 载荷（28B）：size/crc32/version/build_ts/hmac16。
+    HMAC 覆盖 = 镜像头前 20B（magic/version/size/crc32/build_ts）+ 固件全部字节，
+    与固件端（ota.c END / bootloader slot_verify）逐字节一致。"""
+    crc = crc32_compute(fw)
+    prefix = struct.pack('<IIIII', IMG_MAGIC, version, len(fw), crc, build_ts)
+    mac = hmac_mod.new(key, prefix + fw, hashlib.sha256).digest()[:16]
+    return struct.pack('<IIII', len(fw), crc, version, build_ts) + mac
 
 
 def crc16_compute(data: bytes) -> int:
@@ -291,7 +318,10 @@ def cmd_upload(args) -> int:
         return 1
 
     fw_crc = crc32_compute(fw)
-    print(f"固件: {args.firmware} ({len(fw)} B, CRC32 {fw_crc:08X})")
+    key = load_key(args.key, args.key_hex)
+    build_ts = args.build_ts if args.build_ts else int(time.time())
+    print(f"固件: {args.firmware} ({len(fw)} B, CRC32 {fw_crc:08X}, "
+          f"build_ts={build_ts}, 签名=HMAC-SHA256-128)")
 
     ser = serial.Serial(args.port, args.baud, timeout=1)
     time.sleep(0.1)
@@ -302,10 +332,11 @@ def cmd_upload(args) -> int:
     if args.proto != 'auto' and int(args.proto) != proto:
         print(f"提示: --proto v{args.proto} 与探测结果不符，按探测结果 v{proto} 继续")
 
-    # ---- START ----
+    # ---- START ----（v2/v3 设备发 28B 签名载荷——旧 v2 固件会忽略多出的
+    #      16B 兼容运行；v1 老固件维持 12B 无签名）
     print("\n[1/3] OTA START ...")
     if proto == 2:
-        start_data = struct.pack('<III', len(fw), fw_crc, args.version)
+        start_data = start_payload(fw, args.version, build_ts, key)
     else:
         start_data = struct.pack('<II', len(fw), fw_crc)
     ser.write(make_packet(proto, CMD_OTA_START, start_data))
@@ -350,6 +381,15 @@ def cmd_upload(args) -> int:
     return 0
 
 
+def cmd_genkey(args) -> int:
+    key = os.urandom(32)
+    open(args.out, 'wb').write(key)
+    print(f"密钥已写入 {args.out}（32B）")
+    print(f"固件构建注入: cmake -DOTA_HMAC_KEY_HEX={key.hex()} ...")
+    print(f"上位机使用:   ota_tool.py upload ... --key {args.out}")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description='STM32 OTA 固件工具 (v1/v2 自适应)')
     sub = parser.add_subparsers(dest='cmd', required=True)
@@ -361,7 +401,15 @@ def main():
     p_up.add_argument('--version', type=lambda x: int(x, 0), default=0,
                       help='固件版本号（默认 0）')
     p_up.add_argument('--proto', choices=['auto', '1', '2'], default='auto')
+    p_up.add_argument('--key', help='HMAC 密钥文件（32B）；默认用固件内嵌开发密钥')
+    p_up.add_argument('--key-hex', help='HMAC 密钥十六进制（64 字符）')
+    p_up.add_argument('--build-ts', type=lambda x: int(x, 0), default=0,
+                      help='构建时间戳/防降级计数（默认当前时间；测试回滚门用）')
     p_up.set_defaults(func=cmd_upload)
+
+    p_gk = sub.add_parser('genkey', help='生成 32B 随机 HMAC 密钥')
+    p_gk.add_argument('out', help='密钥输出文件（gitignore 它）')
+    p_gk.set_defaults(func=cmd_genkey)
 
     p_q = sub.add_parser('query', help='查询设备状态')
     p_q.add_argument('port', help='串口')

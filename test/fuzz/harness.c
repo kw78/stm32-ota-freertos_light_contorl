@@ -58,6 +58,7 @@ void HAL_UART_Transmit(UART_HandleTypeDef *h, const uint8_t *data,
 void NVIC_SystemReset(void);
 
 /* ---- 真实被测代码（含全部 static 状态） ---- */
+#include "../../Core/Src/sha256.c"     /* ota.c v3 的签名验证依赖 */
 #include "../../Core/Src/ota.c"
 
 /* ---- 引用被测代码内部状态的 mock 实现 ---- */
@@ -147,8 +148,36 @@ static void session_reset(void)
     ota_fw_size = 0;
     ota_fw_crc32 = 0;
     ota_fw_version = 0;
+    ota_fw_build_ts = 0;
+    memset(ota_fw_hmac, 0, sizeof(ota_fw_hmac));
     ota_bytes_written = 0;
     g_ota_session_active = 0;
+    memset(&g_ota_flag_cache, 0, sizeof(g_ota_flag_cache));   /* 防降级地板归零 */
+}
+
+/* v3 签名 START 载荷（与 ota_tool.start_payload 逐字节一致） */
+static void build_signed_start(const uint8_t *img, uint32_t size, uint32_t ts,
+                               uint8_t out[32], int corrupt_mac)
+{
+    uint8_t key[OTA_HMAC_KEY_LEN];
+    assert(ota_hmac_key_from_hex(OTA_HMAC_KEY_HEX, key, sizeof(key)));
+    OTA_ImageHdr_t h = {
+        .magic = OTA_IMG_MAGIC, .version = 0xBEEF,
+        .size = size, .build_ts = ts,
+    };
+    h.crc32 = ~crc32_update(0xFFFFFFFF, img, size);
+    HmacSha256 hm;
+    hmac_sha256_begin(&hm, key, sizeof(key));
+    sha256_update(&hm.inner, (const uint8_t *)&h, 20);
+    sha256_update(&hm.inner, img, size);
+    uint8_t mac[32];
+    hmac_sha256_end(&hm, mac);
+    memcpy(out, &(uint32_t){size}, 4);
+    memcpy(out + 4, &h.crc32, 4);
+    memcpy(out + 8, &(uint32_t){0xBEEF}, 4);
+    memcpy(out + 12, &ts, 4);
+    memcpy(out + 16, mac, 16);
+    if (corrupt_mac) out[16] ^= 0x01;      /* 破坏签名最低位 */
 }
 
 static size_t tx_find(uint8_t b)               /* TX 流里找字节（ACK/NACK） */
@@ -220,22 +249,28 @@ static int directed_cases(void)
         }
     }
 
-    /* D4: 乱序 SEQ NACK、顺序上传小镜像 → END 合法复位（O2） */
+    /* D4: 12B 旧格式 START 必须拒绝（v3 强制签名） */
+    session_reset(); tx_len = 0;
+    {
+        uint8_t d[12] = {128, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+        build_frame(CMD_OTA_START, d, 12, 0);
+        feed(frame, frame_len);
+        if (tx_find(0x15) == (size_t)-1) { printf("D4 FAIL: 未签名 12B START 未 NACK\n"); fails++; }
+    }
+
+    /* D4b: 签名上传小镜像：乱序 SEQ NACK → 顺序补齐 → END 合法复位（O2） */
     session_reset(); tx_len = 0;
     {
         uint8_t img[128];
         for (int i = 0; i < 128; i++) img[i] = (uint8_t)i;
-        uint32_t crc = ~crc32_update(0xFFFFFFFF, img, 128);
-        uint8_t d[12];
-        uint32_t sz = 128, ver = 0xBEEF;
-        memcpy(d, &sz, 4);
-        memcpy(d + 4, &crc, 4);
-        memcpy(d + 8, &ver, 4);
-        build_frame(CMD_OTA_START, d, 12, 0);
+        uint8_t d[32];
+        build_signed_start(img, 128, 1000, d, 0);
+        build_frame(CMD_OTA_START, d, 32, 0);
         feed(frame, frame_len);
+        if (tx_find(0x06) == (size_t)-1) { printf("D4b FAIL: 合法签名 START 未 ACK\n"); fails++; }
         build_frame(CMD_OTA_DATA, img + 64, 64, 5);          /* 乱序：先发 seq5 */
         feed(frame, frame_len);
-        if (tx_find(0x15) == (size_t)-1) { printf("D4 FAIL: 乱序 SEQ 未 NACK\n"); fails++; }
+        if (tx_find(0x15) == (size_t)-1) { printf("D4b FAIL: 乱序 SEQ 未 NACK\n"); fails++; }
         tx_len = 0;
         build_frame(CMD_OTA_DATA, img, 64, 0);
         feed(frame, frame_len);
@@ -245,7 +280,40 @@ static int directed_cases(void)
         build_frame(CMD_OTA_END, NULL, 0, 0);
         feed(frame, frame_len);
         if (sysreset_count != resets + 1) {
-            printf("D4 FAIL: 合法 END 未触发复位流程\n");
+            printf("D4b FAIL: 合法 END 未触发复位流程\n");
+            fails++;
+        }
+    }
+
+    /* D7: 防降级——build_ts 低于 flag.min_build 的 START 必须早拒 */
+    session_reset(); tx_len = 0;
+    {
+        uint8_t img[64];
+        for (int i = 0; i < 64; i++) img[i] = (uint8_t)(i ^ 0x5A);
+        uint8_t d[32];
+        build_signed_start(img, 64, 100, d, 0);              /* ts=100 */
+        g_ota_flag_cache.min_build = 500;                    /* 地板 500 */
+        build_frame(CMD_OTA_START, d, 32, 0);
+        feed(frame, frame_len);
+        if (tx_find(0x15) == (size_t)-1) { printf("D7 FAIL: 降级镜像 START 未 NACK\n"); fails++; }
+    }
+
+    /* D8: 签名错误——完整上传后 END 必须拒绝且不得复位（信任链核心 oracle） */
+    session_reset(); tx_len = 0;
+    {
+        uint8_t img[64];
+        for (int i = 0; i < 64; i++) img[i] = (uint8_t)(i * 3 + 1);
+        uint8_t d[32];
+        build_signed_start(img, 64, 2000, d, 1);             /* 破坏 1bit 签名 */
+        build_frame(CMD_OTA_START, d, 32, 0);
+        feed(frame, frame_len);
+        build_frame(CMD_OTA_DATA, img, 64, 0);
+        feed(frame, frame_len);
+        uint32_t resets = sysreset_count;
+        build_frame(CMD_OTA_END, NULL, 0, 0);
+        feed(frame, frame_len);
+        if (sysreset_count != resets || tx_find(0x15) == (size_t)-1) {
+            printf("D8 FAIL: 坏签名 END 未拒绝（复位=%u）\n", sysreset_count);
             fails++;
         }
     }
@@ -338,7 +406,7 @@ int main(int argc, char **argv)
     printf("OTA fuzz 台 | seed=%llu seconds=%.0fs\n", (unsigned long long)seed, seconds);
 
     int fails = directed_cases();
-    printf("定向回归: %s（6 项）\n", fails ? "FAIL" : "PASS");
+    printf("定向回归: %s（8 项）\n", fails ? "FAIL" : "PASS");
 
     long iters = 0;
     clock_t t0 = clock();

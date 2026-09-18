@@ -29,7 +29,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from ota_tool import (ACK, CHUNK_SIZE, CMD_GET_LOG, CMD_OTA_DATA, CMD_OTA_END,
                       CMD_OTA_START, CMD_QUERY, NACK, crc32_compute,
-                      make_packet_v2, read_packet_v2)
+                      make_packet_v2, read_packet_v2, start_payload, load_key)
 
 try:
     import serial
@@ -80,11 +80,12 @@ class Dev:
         print(f"    等待 {STATE_NAMES.get(target, target)} 超时（{desc}），最后: {last}")
         return None
 
-    def upload(self, fw: bytes, version: int) -> bool:
-        """v2 上传（带回退重试的简化版，与 ota_tool 语义一致）"""
+    def upload(self, fw: bytes, version: int, build_ts: int = None) -> bool:
+        """v3 上传（签名 START，带回退重试的简化版）"""
         self.ser.reset_input_buffer()
         self.send(make_packet_v2(CMD_OTA_START,
-                  struct.pack('<III', len(fw), crc32_compute(fw), version)))
+                  start_payload(fw, version,
+                                build_ts or int(time.time()), load_key())))
         if not self.wait_ack(30):
             return False
         for seq, off in enumerate(range(0, len(fw), CHUNK_SIZE)):
@@ -114,7 +115,7 @@ def flash_baseline() -> bool:
             '-c', 'init', '-c', 'reset halt',
             '-c', 'flash erase_address 0x08000000 0x10000',
             '-c', 'flash write_image /tmp/hil_boot.bin 0x08000000 bin',
-            '-c', 'flash write_image /tmp/hil_good.bin 0x08002000 bin',
+            '-c', 'flash write_image /tmp/hil_good.bin 0x08002800 bin',
             '-c', 'reset run', '-c', 'shutdown']
     r = subprocess.run(cmds, capture_output=True, text=True, timeout=120)
     return r.returncode == 0
@@ -140,6 +141,19 @@ def main():
 
     good = Path(args.good).read_bytes()
     bad = Path(args.bad).read_bytes()
+
+    # 镜像基址体检（v3 教训：上传了旧链接基址的 bin，装上就崩溃循环）
+    import struct as _st
+    APP_BASE, APP_TOP = 0x08002800, 0x0800F800
+    for name, fw in (('good', good), ('bad', bad)):
+        if len(fw) < 8:
+            print(f'错误: {name} 镜像过短'); return 1
+        sp, rv = _st.unpack('<II', fw[:8])
+        if not (0x20000000 <= sp <= 0x20005000) or not (APP_BASE <= rv < APP_TOP):
+            print(f'错误: {name} 镜像基址不符（SP={sp:08X} Reset={rv:08X}，'
+                  f'期望 App 区 {APP_BASE:08X}+）——检查 objcopy 的 elf 是否为新分区构建')
+            return 1
+    print(f'镜像体检: good {len(good)}B / bad {len(bad)}B，复位向量均在 v3 App 区 ✓')
 
     results = []
 
@@ -168,7 +182,8 @@ def main():
     check('v2 在线', q is not None and q['proto'] == 2, f"{q}")
 
     step(2, f'OTA 上传 good 镜像 ({len(good)}B)')
-    check('上传完成', dev.upload(good, args.version))
+    good_build_ts = int(time.time())
+    check('上传完成', dev.upload(good, args.version, good_build_ts))
     q = dev.wait_state(0, timeout=90, desc='安装+确认+金备份')
     check('回到 IDLE（确认成功）', q is not None, f"{q}")
     ver_good = q['version'] if q else None
@@ -182,7 +197,15 @@ def main():
     check('版本恢复为 good', q is not None and q['version'] == ver_good,
           f"0x{q['version']:08X}" if q else '')
 
-    step(4, '黑匣子取证')
+    step(4, '防降级负向：签名合法但 build_ts 更旧的镜像必须被拒')
+    old_ts = good_build_ts - 3600
+    dev.ser.reset_input_buffer()
+    dev.send(make_packet_v2(CMD_OTA_START,
+             start_payload(good, args.version, old_ts, load_key())))
+    check('旧 ts START 被 NACK', not dev.wait_ack(10),
+          f'ts={old_ts} vs min_build≈{good_build_ts}')
+
+    step(5, '黑匣子取证')
     recs = dev.blackbox_scan_tail()
     kinds = [k for (_, k, _) in recs]
     check('存在 REC_FAULT 崩溃现场', 2 in kinds, f"kinds={sorted(set(kinds))}")

@@ -35,6 +35,11 @@ jobs:
           python3 tools/ci_manifest.py /tmp/app.bin /tmp/boot.bin
           cat build/manifest.json
 
+      - name: Crypto vectors (SHA-256 / HMAC, NIST + RFC 4231)
+        run: |
+          gcc -O2 -Wall -Wextra -I Core/Inc test/sha256_test.c Core/Src/sha256.c -o /tmp/sha256_test
+          /tmp/sha256_test
+
       - name: Model check (bootloader power-cut exhaustive)
         run: python3 tools/model_check.py
 

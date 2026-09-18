@@ -35,7 +35,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from ota_tool import (CMD_OTA_DATA, CMD_OTA_END, CMD_OTA_START, CMD_QUERY,
                       ACK, NACK, CHUNK_SIZE, FW_MAX_SIZE,
-                      crc32_compute, make_packet_v2, read_packet_v2)
+                      crc32_compute, make_packet_v2, read_packet_v2,
+                      start_payload, load_key)
 
 try:
     import serial
@@ -84,10 +85,10 @@ class UploadThread(threading.Thread):
 
     def run(self):
         try:
+            # v3：32B 签名 START（build_ts=当前时间，防降级地板之上）
             self.link.send(make_packet_v2(CMD_OTA_START,
-                            len(self.fw).to_bytes(4, 'little')
-                            + crc32_compute(self.fw).to_bytes(4, 'little')
-                            + self.version.to_bytes(4, 'little')))
+                            start_payload(self.fw, self.version,
+                                          int(time.time()), load_key())))
             if not self.link.wait_ack(30):
                 self.error = 'START nacked'
                 return

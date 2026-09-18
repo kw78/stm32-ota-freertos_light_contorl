@@ -3,7 +3,7 @@
 CI 尺寸闸门 + 固件清单生成
 
 用法: python3 tools/ci_manifest.py <app.bin> <boot.bin>
-- 校验 bootloader ≤ 8KB、app ≤ 54KB（链接器分区）且 ≤ 56KB（OTA 上限）
+- 校验 bootloader ≤ 10KB、app ≤ 52KB（v3 链接器分区）且 ≤ 56KB（OTA 上限）
 - 生成 build/manifest.json（版本=git hash、大小、CRC32、SHA256）
 退出码非 0 即失败（CI 直接红）
 """
@@ -15,9 +15,9 @@ import os
 import subprocess
 import sys
 
-APP_LIMIT_LINKER = 54 * 1024
+APP_LIMIT_LINKER = 52 * 1024
 APP_LIMIT_OTA    = 56 * 1024
-BOOT_LIMIT       = 8 * 1024
+BOOT_LIMIT       = 10 * 1024
 
 
 def git_hash() -> str:
@@ -71,8 +71,8 @@ def main() -> int:
         json.dump(manifest, f, indent=2)
         f.write("\n")
 
-    print(f"PASS: app {app['size']}B ({app['size']*100//APP_LIMIT_LINKER}% of 54K), "
-          f"boot {boot['size']}B ({boot['size']*100//BOOT_LIMIT}% of 8K)")
+    print(f"PASS: app {app['size']}B ({app['size']*100//APP_LIMIT_LINKER}% of 52K), "
+          f"boot {boot['size']}B ({boot['size']*100//BOOT_LIMIT}% of 10K)")
     return 0
 
 

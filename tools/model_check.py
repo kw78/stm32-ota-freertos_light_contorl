@@ -110,10 +110,15 @@ def closure(st: St, reason: str, app_new_good: bool, variant: str):
 
     app_new_good：内部 App 是 NEW 时是否健康（BAD_FW 场景 = False → 崩溃循环）。
     App 健康 + TESTING + 10s → 确认（金备份 + IDLE）；崩溃 → IWDG 复位再来。
+    Bug #21 语义：Bootloader 跳入 TESTING 候选前替它武装 IWDG（26s）——
+    "装得进去但既不武装看门狗也不 HardFault 的安静挂死镜像"也会被咬，
+    回滚不再依赖候选固件自身的合作。
     """
     reason_next = reason
     for _ in range(MAX_BOOTS):
         st2, target, installed = boot_decision(st, reason_next, variant)
+        if st2.flag_valid and st2.state == TESTING:
+            st2 = replace(st2, iwdg=True)     # Bootloader 兜底武装（Bug #21）
 
         # 搬运是非原子序列（擦内部→编程→写 flag），恢复路径上的第二次断电
         # 由深度 2 枚举覆盖；闭包内假设搬运一次完成。
